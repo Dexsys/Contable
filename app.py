@@ -21,6 +21,16 @@ def create_app(config_class=Config):
     migrate.init_app(app, db)
     register_blueprints(app)
 
+    @app.context_processor
+    def inject_app_meta():
+        app_env = (app.config.get("APP_ENVIRONMENT") or "production").strip().lower()
+        is_development = app_env != "production"
+        return {
+            "app_version": app.config.get("APP_VERSION") or "-",
+            "app_environment": app_env,
+            "is_development": is_development,
+        }
+
     return app
 
 if __name__ == "__main__":

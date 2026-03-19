@@ -4,17 +4,19 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Contable | Panel Banco</title>
-    <link rel="stylesheet" href="/static/css/dashboard.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css', v='20260319-modal-edit') }}">
 </head>
-<body>
+<body class="env-{{ app_environment }}">
     <div class="bg-grid"></div>
     <section class="session-bar">
         <div class="session-info">
             <strong id="session-email">Sin sesión</strong>
             <span>Rol: <b id="session-role">-</b></span>
+            <span id="session-version">Version: <b>{{ app_version }}</b>{% if is_development %} | Ambiente: <b>DESARROLLO</b>{% endif %}</span>
         </div>
         <div class="session-actions">
             <button type="button" id="switch-user-btn">Cambiar usuario</button>
+            <button type="button" id="change-password-btn">Cambiar contraseña</button>
             <button type="button" id="logout-btn">Cerrar sesión</button>
         </div>
     </section>
@@ -110,7 +112,7 @@
                     </select>
                 </label>
                 <label>Monto
-                    <input type="number" name="amount" min="1" step="0.01" required>
+                    <input type="text" name="amount" data-money-mask="1" inputmode="decimal" placeholder="0" required>
                 </label>
                 <label>Cuenta
                     <input list="account-options" name="account_code" placeholder="1.01.01" required>
@@ -145,7 +147,7 @@
                         <input type="date" name="opened_at" required>
                     </label>
                     <label>Monto
-                        <input type="number" name="principal_amount" min="1" step="0.01" required>
+                        <input type="text" name="principal_amount" data-money-mask="1" inputmode="decimal" placeholder="0" required>
                     </label>
                     <label>Institucion
                         <input type="text" name="institution" placeholder="Banco">
@@ -164,7 +166,7 @@
                         <input type="date" name="rescued_at" required>
                     </label>
                     <label>Monto Rescate
-                        <input type="number" name="rescue_amount" min="1" step="0.01" required>
+                        <input type="text" name="rescue_amount" data-money-mask="1" inputmode="decimal" placeholder="0" required>
                     </label>
                     <div class="actions">
                         <button type="submit">Registrar Rescate</button>
@@ -337,9 +339,95 @@
         </section>
     </main>
 
+    <div id="edit-entry-modal" class="modal-backdrop" hidden>
+        <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="edit-entry-title">
+            <div class="modal-head">
+                <h3 id="edit-entry-title">Editar Movimiento</h3>
+                <button type="button" id="edit-entry-close" class="modal-close" aria-label="Cerrar">×</button>
+            </div>
+            <form id="edit-entry-form" class="grid-form">
+                <input type="hidden" id="edit-entry-id">
+                <label>Fecha
+                    <input type="date" id="edit-entry-date" required>
+                </label>
+                <label>Cuenta
+                    <input list="account-options" id="edit-entry-account-code" placeholder="1.01.01" required>
+                </label>
+                <label class="wide">Nombre cuenta
+                    <input type="text" id="edit-entry-account-name" placeholder="Nombre cuenta">
+                </label>
+                <label class="wide">Descripcion
+                    <input type="text" id="edit-entry-description" placeholder="Detalle del movimiento" required>
+                </label>
+                <label>Ingreso/Haber
+                    <input type="text" id="edit-entry-credit" data-money-mask="1" inputmode="decimal" placeholder="0" required>
+                </label>
+                <label>Egreso/Debe
+                    <input type="text" id="edit-entry-debit" data-money-mask="1" inputmode="decimal" placeholder="0" required>
+                </label>
+                <label>Referencia
+                    <input type="text" id="edit-entry-reference" placeholder="Opcional">
+                </label>
+                <label class="wide">Observacion
+                    <input type="text" id="edit-entry-note" placeholder="Opcional">
+                </label>
+                <div class="actions wide modal-actions">
+                    <button type="submit">Guardar cambios</button>
+                    <button type="button" id="edit-entry-cancel" class="secondary-btn">Cancelar</button>
+                </div>
+            </form>
+        </section>
+    </div>
+
+    <div id="change-password-modal" class="modal-backdrop" hidden>
+        <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="change-password-title">
+            <div class="modal-head">
+                <h3 id="change-password-title">Cambiar contraseña</h3>
+                <button type="button" id="change-password-close" class="modal-close" aria-label="Cerrar">×</button>
+            </div>
+            <form id="change-password-form" class="grid-form">
+                <label class="wide">Contraseña actual
+                    <input type="password" id="current-password" autocomplete="current-password" placeholder="Ingresa tu contraseña actual">
+                </label>
+                <label class="wide">Nueva contraseña
+                    <input type="password" id="new-password" autocomplete="new-password" required minlength="8" placeholder="Mínimo 8 caracteres">
+                </label>
+                <label class="wide">Confirmar nueva contraseña
+                    <input type="password" id="confirm-password" autocomplete="new-password" required minlength="8" placeholder="Repite la nueva contraseña">
+                </label>
+                <div class="actions wide modal-actions">
+                    <button type="submit">Guardar contraseña</button>
+                    <button type="button" id="change-password-cancel" class="secondary-btn">Cancelar</button>
+                </div>
+            </form>
+        </section>
+    </div>
+
+    <div id="login-modal" class="modal-backdrop" hidden>
+        <section class="modal-card auth-card" role="dialog" aria-modal="true" aria-labelledby="login-title">
+            <div class="auth-head">
+                <p class="eyebrow">Acceso</p>
+                <h2 id="login-title">Ingreso al Sistema</h2>
+                <p class="subtitle">Ingresa con tu correo y contraseña para continuar.</p>
+            </div>
+            <form id="login-form" class="grid-form">
+                <label class="wide">Correo
+                    <input type="email" id="login-email" placeholder="usuario@colbun.cl" autocomplete="username" required>
+                </label>
+                <label class="wide">Contraseña
+                    <input type="password" id="login-password" placeholder="Tu contraseña" autocomplete="current-password">
+                </label>
+                <p id="login-error" class="auth-error" hidden></p>
+                <div class="actions wide modal-actions">
+                    <button type="submit" id="login-submit-btn">Ingresar</button>
+                </div>
+            </form>
+        </section>
+    </div>
+
     <datalist id="account-options"></datalist>
     <div id="toast" class="toast" aria-live="polite"></div>
 
-    <script src="/static/js/dashboard.js"></script>
+    <script src="{{ url_for('static', filename='js/dashboard.js', v='20260319-modal-edit') }}"></script>
 </body>
 </html>

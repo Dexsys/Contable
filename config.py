@@ -55,3 +55,7 @@ class Config:
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = os.environ.get('SESSION_COOKIE_SAMESITE', 'Lax')
     SESSION_COOKIE_SECURE = env_bool('SESSION_COOKIE_SECURE', False)
+
+    _raw_app_env = (os.environ.get('APP_ENV') or os.environ.get('FLASK_ENV') or '').strip().lower()
+    APP_ENVIRONMENT = 'production' if _raw_app_env in ('', 'prod', 'production') else 'development'
+    APP_VERSION = (os.environ.get('APP_VERSION') or os.environ.get('RELEASE_VERSION') or '1.2026.0319').strip()

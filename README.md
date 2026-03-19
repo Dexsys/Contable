@@ -9,6 +9,15 @@ Aplicación Flask con patrón factory, SQLAlchemy y migraciones Alembic para ope
 - URL: http://contable.dexsys.cl
 - Repositorio: https://github.com/Dexsys/Contable.git
 
+## Ultimos cambios
+
+- Edición de movimientos con formulario modal (sin prompts por campo).
+- Colores de saldos por signo: azul positivos y rojo negativos.
+- Máscaras con separador de miles para campos numéricos en ingreso/edición.
+- Cambio de usuario restringido a rol administrador.
+- Cambio de contraseña para usuario autenticado.
+- Diferenciación visual de ambiente (producción/desarrollo) y versión en barra de sesión.
+
 ## Arquitectura
 
 - app.py: fábrica Flask (`create_app`) y registro de blueprints.

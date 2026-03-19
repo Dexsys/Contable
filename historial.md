@@ -6,6 +6,20 @@
 
 ---
 
+## [1.2026.0319.2] - 2026-03-19
+
+### Agregado
+- Cambio de contraseña para usuario autenticado (`POST /auth/change-password`).
+- Cambio de usuario por impersonación solo para rol administrador (`POST /auth/switch-user`).
+- Formulario visual de ingreso al sistema (modal de login).
+- Etiqueta de versión y ambiente en la barra de sesión.
+
+### Modificado
+- Edición de movimientos en resumen migrada a formulario modal completo (sin diálogos por campo).
+- Campos numéricos de ingreso y edición ahora usan máscara con separador de miles.
+- Saldos destacados por signo: azul para positivos y rojo para negativos.
+- Diferenciación visual del fondo por ambiente: celeste en productivo y verde agua en desarrollo.
+
 ## [1.2026.0319] - 2026-03-19
 
 ### Modificado

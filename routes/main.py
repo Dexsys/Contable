@@ -313,18 +313,15 @@ def resolve_period_bounds():
 
 
 def apply_period_filters(query):
-    start, end, month, year = get_period_filters()
+    period_start, period_end = resolve_period_bounds()
+    filter_date = LedgerEntry.entry_date
 
-    effective_date = func.coalesce(LedgerEntry.bank_effective_date, LedgerEntry.entry_date)
-
-    if year:
-        query = query.filter(func.extract("year", effective_date) == year)
-    if month:
-        query = query.filter(func.extract("month", effective_date) == month)
-    if start:
-        query = query.filter(effective_date >= start)
-    if end:
-        query = query.filter(effective_date <= end)
+    # El periodo siempre se interpreta como un rango cerrado [inicio, fin].
+    # Ejemplo: year=2025, month=Todos -> 2025-01-01 a 2025-12-31.
+    if period_start:
+        query = query.filter(filter_date >= period_start)
+    if period_end:
+        query = query.filter(filter_date <= period_end)
 
     return query
 
@@ -690,7 +687,7 @@ def list_term_deposits():
 def bank_summary_report():
     include_entries = request.args.get("include_entries", "0") in ("1", "true", "yes")
     period_start, period_end = resolve_period_bounds()
-    effective_date = func.coalesce(LedgerEntry.bank_effective_date, LedgerEntry.entry_date)
+    filter_date = LedgerEntry.entry_date
 
     query = LedgerEntry.query.order_by(LedgerEntry.entry_date.asc(), LedgerEntry.id.asc())
     query = apply_period_filters(query)
@@ -702,7 +699,7 @@ def bank_summary_report():
 
     previous_balance = Decimal("0")
     if period_start:
-        previous_query = LedgerEntry.query.filter(effective_date < period_start)
+        previous_query = LedgerEntry.query.filter(filter_date < period_start)
         previous_entries = previous_query.all()
         previous_debit = sum((Decimal(e.debit or 0) for e in previous_entries), Decimal("0"))
         previous_credit = sum((Decimal(e.credit or 0) for e in previous_entries), Decimal("0"))
@@ -746,16 +743,16 @@ def available_periods_report():
     latest_date = None
 
     for row in rows:
-        effective_date = row.bank_effective_date or row.entry_date
-        if not effective_date:
+        filter_date = row.entry_date
+        if not filter_date:
             continue
 
-        year = effective_date.year
-        month = effective_date.month
+        year = filter_date.year
+        month = filter_date.month
         years.add(year)
         months_by_year.setdefault(str(year), set()).add(month)
-        if latest_date is None or effective_date > latest_date:
-            latest_date = effective_date
+        if latest_date is None or filter_date > latest_date:
+            latest_date = filter_date
 
     ordered_years = sorted(years)
     return jsonify(

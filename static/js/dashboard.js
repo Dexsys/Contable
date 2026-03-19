@@ -4,6 +4,8 @@ const state = {
     auth: null,
     roles: [],
     periods: { years: [], months_by_year: {}, latest: null },
+    editingEntry: null,
+    loginResolver: null,
 };
 
 const MONTH_LABELS = {
@@ -29,8 +31,176 @@ function formatCurrency(value) {
     }).format(value || 0);
 }
 
+function signedClass(value) {
+    if (Number(value) > 0) return "signed-positive";
+    if (Number(value) < 0) return "signed-negative";
+    return "signed-neutral";
+}
+
+function applySignedClass(element, value) {
+    if (!element) return;
+    element.classList.remove("signed-positive", "signed-negative", "signed-neutral");
+    element.classList.add(signedClass(value));
+}
+
 function qs(id) {
     return document.getElementById(id);
+}
+
+function normalizeMoneyValue(value) {
+    let raw = String(value ?? "").trim().replace(/\s+/g, "").replace(/\$/g, "");
+    if (!raw) return "";
+
+    const hasDot = raw.includes(".");
+    const hasComma = raw.includes(",");
+
+    if (hasDot && hasComma) {
+        const lastDot = raw.lastIndexOf(".");
+        const lastComma = raw.lastIndexOf(",");
+        const decimalSep = lastComma > lastDot ? "," : ".";
+        const thousandSep = decimalSep === "," ? "." : ",";
+        raw = raw.split(thousandSep).join("");
+        raw = raw.replace(decimalSep, ".");
+    } else if (hasComma) {
+        const count = (raw.match(/,/g) || []).length;
+        const idx = raw.lastIndexOf(",");
+        const decimals = raw.length - idx - 1;
+        if (count === 1 && decimals > 0 && decimals <= 2) {
+            raw = raw.replace(",", ".");
+        } else {
+            raw = raw.split(",").join("");
+        }
+    } else if (hasDot) {
+        const count = (raw.match(/\./g) || []).length;
+        const idx = raw.lastIndexOf(".");
+        const decimals = raw.length - idx - 1;
+        if (!(count === 1 && decimals > 0 && decimals <= 2)) {
+            raw = raw.split(".").join("");
+        }
+    }
+
+    raw = raw.replace(/[^0-9.\-]/g, "");
+    const negative = raw.startsWith("-");
+    raw = raw.replace(/-/g, "");
+
+    const firstDot = raw.indexOf(".");
+    if (firstDot !== -1) {
+        raw = raw.slice(0, firstDot + 1) + raw.slice(firstDot + 1).replace(/\./g, "");
+    }
+
+    if (!raw) return "";
+    return negative ? `-${raw}` : raw;
+}
+
+function formatMoneyForInput(value) {
+    const normalized = normalizeMoneyValue(value);
+    if (!normalized) return "";
+    const numeric = Number(normalized);
+    if (!Number.isFinite(numeric)) return "";
+    const decimals = normalized.includes(".") ? Math.min((normalized.split(".")[1] || "").length, 2) : 0;
+    return new Intl.NumberFormat("es-CL", {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: 2,
+    }).format(numeric);
+}
+
+function setupMoneyMasks(root = document) {
+    const inputs = root.querySelectorAll('[data-money-mask="1"]');
+    inputs.forEach((input) => {
+        if (input.dataset.moneyMaskReady === "1") {
+            return;
+        }
+        input.dataset.moneyMaskReady = "1";
+
+        input.addEventListener("focus", () => {
+            input.value = normalizeMoneyValue(input.value);
+        });
+
+        input.addEventListener("blur", () => {
+            input.value = formatMoneyForInput(input.value);
+        });
+
+        input.addEventListener("input", () => {
+            input.value = input.value.replace(/[^0-9.,\-]/g, "");
+        });
+
+        if (input.value) {
+            input.value = formatMoneyForInput(input.value);
+        }
+    });
+}
+
+function openEditEntryModal(entry) {
+    state.editingEntry = entry;
+
+    qs("edit-entry-id").value = entry.id || "";
+    qs("edit-entry-date").value = entry.entry_date || "";
+    qs("edit-entry-description").value = entry.description || "";
+    qs("edit-entry-account-code").value = entry.account_code || "";
+    qs("edit-entry-account-name").value = entry.account_name || "";
+    qs("edit-entry-credit").value = String(entry.credit || 0);
+    qs("edit-entry-debit").value = String(entry.debit || 0);
+    qs("edit-entry-reference").value = entry.reference || "";
+    qs("edit-entry-note").value = entry.note || "";
+
+    const modal = qs("edit-entry-modal");
+    qs("edit-entry-credit").value = formatMoneyForInput(qs("edit-entry-credit").value);
+    qs("edit-entry-debit").value = formatMoneyForInput(qs("edit-entry-debit").value);
+    modal.hidden = false;
+    qs("edit-entry-date").focus();
+}
+
+function closeEditEntryModal() {
+    state.editingEntry = null;
+    qs("edit-entry-modal").hidden = true;
+    qs("edit-entry-form").reset();
+}
+
+function setupEditEntryModal() {
+    const modal = qs("edit-entry-modal");
+    const form = qs("edit-entry-form");
+
+    qs("edit-entry-close").addEventListener("click", closeEditEntryModal);
+    qs("edit-entry-cancel").addEventListener("click", closeEditEntryModal);
+
+    modal.addEventListener("click", (event) => {
+        if (event.target === modal) {
+            closeEditEntryModal();
+        }
+    });
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const entryId = Number(qs("edit-entry-id").value || 0);
+        if (!entryId) {
+            toast("No se encontró el movimiento", true);
+            return;
+        }
+
+        const payload = {
+            entry_date: qs("edit-entry-date").value,
+            description: qs("edit-entry-description").value.trim(),
+            account_code: qs("edit-entry-account-code").value.trim(),
+            account_name: qs("edit-entry-account-name").value.trim(),
+            credit: normalizeMoneyValue(qs("edit-entry-credit").value) || "0",
+            debit: normalizeMoneyValue(qs("edit-entry-debit").value) || "0",
+            reference: qs("edit-entry-reference").value.trim(),
+            note: qs("edit-entry-note").value.trim(),
+        };
+
+        try {
+            await fetchJson(`/api/entries/${entryId}`, {
+                method: "PATCH",
+                body: JSON.stringify(payload),
+            });
+            closeEditEntryModal();
+            await loadSummary();
+            await loadRecent();
+            toast("Movimiento actualizado");
+        } catch (error) {
+            toast(error.message, true);
+        }
+    });
 }
 
 function toast(message, isError = false) {
@@ -70,6 +240,56 @@ function applyPermissionVisibility() {
     });
 }
 
+function setupLoginModal() {
+    const form = qs("login-form");
+    const modal = qs("login-modal");
+    const errorBox = qs("login-error");
+    const submitBtn = qs("login-submit-btn");
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const email = qs("login-email").value.trim();
+        const password = qs("login-password").value || "";
+        if (!email) {
+            errorBox.textContent = "Debes ingresar un correo";
+            errorBox.hidden = false;
+            return;
+        }
+
+        submitBtn.disabled = true;
+        errorBox.hidden = true;
+        try {
+            const login = await fetchJson("/auth/login", {
+                method: "POST",
+                body: JSON.stringify({ email, password }),
+            });
+
+            modal.hidden = true;
+            form.reset();
+            if (state.loginResolver) {
+                state.loginResolver(login);
+                state.loginResolver = null;
+            }
+        } catch (error) {
+            errorBox.textContent = error.message || "No fue posible iniciar sesión";
+            errorBox.hidden = false;
+        } finally {
+            submitBtn.disabled = false;
+        }
+    });
+}
+
+function requestLogin(cachedEmail = "") {
+    return new Promise((resolve) => {
+        state.loginResolver = resolve;
+        qs("login-email").value = cachedEmail || "";
+        qs("login-password").value = "";
+        qs("login-error").hidden = true;
+        qs("login-modal").hidden = false;
+        qs("login-email").focus();
+    });
+}
+
 async function loadSession() {
     const me = await fetchJson("/auth/me");
     if (me.user) {
@@ -82,16 +302,7 @@ async function loadSession() {
     }
 
     const cached = localStorage.getItem("contable_user_email") || "";
-    const entered = window.prompt("Ingresa tu correo para iniciar sesión", cached);
-    if (!entered) {
-        throw new Error("Debes iniciar sesión para usar el sistema");
-    }
-    const password = window.prompt("Contraseña (deja vacío si no tienes)", "") || "";
-
-    const login = await fetchJson("/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ email: entered.trim(), password }),
-    });
+    const login = await requestLogin(cached);
     state.auth = login.user;
     state.roles = login.roles || [];
     localStorage.setItem("contable_user_email", login.user.email);
@@ -111,10 +322,20 @@ async function switchUser() {
         return;
     }
 
-    const login = await fetchJson("/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ email: entered.trim() }),
-    });
+    const targetEmail = entered.trim();
+    let login;
+    if (state.auth?.effective_role === "admin") {
+        login = await fetchJson("/auth/switch-user", {
+            method: "POST",
+            body: JSON.stringify({ target_email: targetEmail }),
+        });
+    } else {
+        const password = window.prompt("Contraseña", "") || "";
+        login = await fetchJson("/auth/login", {
+            method: "POST",
+            body: JSON.stringify({ email: targetEmail, password }),
+        });
+    }
 
     state.auth = login.user;
     state.roles = login.roles || [];
@@ -122,13 +343,66 @@ async function switchUser() {
     window.location.reload();
 }
 
+function openChangePasswordModal() {
+    const modal = qs("change-password-modal");
+    modal.hidden = false;
+    qs("current-password").focus();
+}
+
+function closeChangePasswordModal() {
+    qs("change-password-modal").hidden = true;
+    qs("change-password-form").reset();
+}
+
+function setupChangePasswordModal() {
+    const modal = qs("change-password-modal");
+    const form = qs("change-password-form");
+
+    qs("change-password-btn").addEventListener("click", openChangePasswordModal);
+    qs("change-password-close").addEventListener("click", closeChangePasswordModal);
+    qs("change-password-cancel").addEventListener("click", closeChangePasswordModal);
+
+    modal.addEventListener("click", (event) => {
+        if (event.target === modal) {
+            closeChangePasswordModal();
+        }
+    });
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const payload = {
+            current_password: qs("current-password").value,
+            new_password: qs("new-password").value,
+            confirm_password: qs("confirm-password").value,
+        };
+        try {
+            await fetchJson("/auth/change-password", {
+                method: "POST",
+                body: JSON.stringify(payload),
+            });
+            closeChangePasswordModal();
+            toast("Contraseña actualizada");
+        } catch (error) {
+            toast(error.message, true);
+        }
+    });
+}
+
 function applyKpis(totals) {
-    qs("kpi-prev-balance").textContent = formatCurrency(totals.previous_balance);
+    const kpiPrev = qs("kpi-prev-balance");
+    const kpiPeriod = qs("kpi-period-balance");
+    const kpiAccum = qs("kpi-balance");
+
+    kpiPrev.textContent = formatCurrency(totals.previous_balance);
     qs("kpi-credit").textContent = formatCurrency(totals.credit);
     qs("kpi-debit").textContent = formatCurrency(totals.debit);
-    qs("kpi-period-balance").textContent = formatCurrency(totals.period_balance);
-    qs("kpi-balance").textContent = formatCurrency(totals.accumulated_final_balance);
+    kpiPeriod.textContent = formatCurrency(totals.period_balance);
+    kpiAccum.textContent = formatCurrency(totals.accumulated_final_balance);
     qs("kpi-entries").textContent = totals.entries;
+
+    applySignedClass(kpiPrev, totals.previous_balance);
+    applySignedClass(kpiPeriod, totals.period_balance);
+    applySignedClass(kpiAccum, totals.accumulated_final_balance);
 }
 
 function renderYearOptions(selectedYear = "") {
@@ -208,11 +482,13 @@ function treeNodeTemplate(node) {
     const header = document.createElement("button");
     header.type = "button";
     header.className = "node-header";
+    const nodeBalanceClass = signedClass(node.balance);
     header.innerHTML = `
         <span class="node-title">${node.code} | ${node.name || "(sin nombre)"}</span>
         <span class="badge">Nivel ${node.level}</span>
         <span class="amount out">Egreso ${formatCurrency(node.debit)}</span>
-        <span class="amount in">Ingreso ${formatCurrency(node.credit)} | Saldo ${formatCurrency(node.balance)}</span>
+        <span class="amount in">Ingreso ${formatCurrency(node.credit)}</span>
+        <span class="amount ${nodeBalanceClass}">Saldo ${formatCurrency(node.balance)}</span>
     `;
 
     const content = document.createElement("div");
@@ -334,42 +610,7 @@ function renderSummary(summary) {
                 toast("No se encontró el movimiento", true);
                 return;
             }
-
-            const entryDate = window.prompt("Fecha (YYYY-MM-DD)", entry.entry_date || "");
-            if (entryDate === null) return;
-            const description = window.prompt("Descripción", entry.description || "");
-            if (description === null) return;
-            const accountCode = window.prompt("Código cuenta", entry.account_code || "");
-            if (accountCode === null) return;
-            const accountName = window.prompt("Nombre cuenta", entry.account_name || "");
-            if (accountName === null) return;
-            const credit = window.prompt("Ingreso/Haber", String(entry.credit || 0));
-            if (credit === null) return;
-            const debit = window.prompt("Egreso/Debe", String(entry.debit || 0));
-            if (debit === null) return;
-            const reference = window.prompt("Referencia", entry.reference || "") ?? "";
-            const note = window.prompt("Observación", entry.note || "") ?? "";
-
-            try {
-                await fetchJson(`/api/entries/${entryId}`, {
-                    method: "PATCH",
-                    body: JSON.stringify({
-                        entry_date: entryDate,
-                        description,
-                        account_code: accountCode,
-                        account_name: accountName,
-                        credit,
-                        debit,
-                        reference,
-                        note,
-                    }),
-                });
-                await loadSummary();
-                await loadRecent();
-                toast("Movimiento actualizado");
-            } catch (error) {
-                toast(error.message, true);
-            }
+            openEditEntryModal(entry);
         });
     });
 
@@ -515,15 +756,16 @@ function makeVoucherLineRow(defaults = {}) {
             <input type="text" class="vl-description" value="${defaults.description || ""}" placeholder="Detalle linea" required>
         </label>
         <label>Debe
-            <input type="number" class="vl-debit" value="${defaults.debit || ""}" min="0" step="0.01">
+            <input type="text" class="vl-debit" data-money-mask="1" inputmode="decimal" value="${defaults.debit || ""}" placeholder="0">
         </label>
         <label>Haber
-            <input type="number" class="vl-credit" value="${defaults.credit || ""}" min="0" step="0.01">
+            <input type="text" class="vl-credit" data-money-mask="1" inputmode="decimal" value="${defaults.credit || ""}" placeholder="0">
         </label>
         <button type="button" class="vl-remove">Quitar</button>
     `;
 
     row.querySelector(".vl-remove").addEventListener("click", () => row.remove());
+    setupMoneyMasks(row);
     return row;
 }
 
@@ -532,8 +774,8 @@ function collectVoucherLines() {
     return rows.map((row) => ({
         account_code: row.querySelector(".vl-account").value.trim(),
         description: row.querySelector(".vl-description").value.trim(),
-        debit: row.querySelector(".vl-debit").value.trim() || "0",
-        credit: row.querySelector(".vl-credit").value.trim() || "0",
+        debit: normalizeMoneyValue(row.querySelector(".vl-debit").value.trim()) || "0",
+        credit: normalizeMoneyValue(row.querySelector(".vl-credit").value.trim()) || "0",
     }));
 }
 
@@ -749,6 +991,7 @@ function setupForms() {
         event.preventDefault();
         const form = event.currentTarget;
         const payload = new FormData(form);
+        payload.set("amount", normalizeMoneyValue(payload.get("amount")) || "0");
 
         try {
             await fetchJson("/api/entries", {
@@ -768,6 +1011,7 @@ function setupForms() {
         event.preventDefault();
         const form = event.currentTarget;
         const payload = formToJson(form);
+        payload.principal_amount = normalizeMoneyValue(payload.principal_amount) || "0";
 
         try {
             await fetchJson("/api/term-deposits/open", {
@@ -787,6 +1031,7 @@ function setupForms() {
         event.preventDefault();
         const form = event.currentTarget;
         const payload = formToJson(form);
+        payload.rescue_amount = normalizeMoneyValue(payload.rescue_amount) || "0";
         const code = payload.code;
         delete payload.code;
 
@@ -863,12 +1108,16 @@ async function bootstrap() {
         if (!el.value) el.value = today;
     });
 
+    setupLoginModal();
     await loadSession();
     await loadAvailablePeriods();
 
     setupMenu();
     setupForms();
+    setupEditEntryModal();
+    setupChangePasswordModal();
     setupPeriodFilters();
+    setupMoneyMasks(document);
     qs("voucher-lines").appendChild(makeVoucherLineRow());
 
     qs("logout-btn").addEventListener("click", async () => {
