@@ -6,7 +6,14 @@
 
 ---
 
-## [1.2026.0319.2] - 2026-03-19
+## [1.2026.0319.3] - 2026-03-19
+
+### Modificado
+- Actualización de `TODO.md` con estado real del proyecto Contable.
+- Priorización de pendientes para despliegue inicial en `192.168.0.89`.
+- Checklist operativo para validación post-deploy (servicio, Nginx, URL y sincronización de datos).
+
+## [1.2026.0319] - 2026-03-19
 
 ### Agregado
 - Soporte de primer despliegue con sincronización de datos locales: `instance/*.db` y `uploads/`.
@@ -20,6 +27,7 @@
 - Preparación de despliegue para servidor `192.168.0.89` en ruta `~/Developer/Flask/Contable`.
 
 ## [1.2026.0319.1] - 2026-03-19
+- Deploy a produccion ejecutado mediante deploy_to_server.py.
 
 ### Agregado
 - Flujo de rechazo de comprobantes con motivo obligatorio.
