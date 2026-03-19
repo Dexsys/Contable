@@ -10,11 +10,18 @@ __pycache__/
 .venv/
 venv/
 env/
+env
 
 # Flask instance/upload
 instance/*.db
 instance/*.sqlite3
+instance/*.sqlite
 uploads/
+uploads/*
+
+# Local env files
+*.env
+*.local
 
 # Tooling
 .pytest_cache/

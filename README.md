@@ -4,7 +4,7 @@ Aplicación Flask con patrón factory, SQLAlchemy y migraciones Alembic para ope
 
 ## Estado
 
-- Version: 1.2026.0319.1
+- Version: 1.2026.0319.2
 - Ultima actualizacion: 2026-03-19
 - URL: http://contable.dexsys.cl
 - Repositorio: https://github.com/Dexsys/Contable.git
@@ -213,6 +213,18 @@ El script realiza:
 - Instalación del unit file en /etc/systemd/system/contable.service
 - daemon-reload, enable, restart y validación de servicio
 - Instalación/validación de sitio Nginx en sites-available/sites-enabled
+- En primer despliegue, sincroniza base local (`instance/*.db`) y archivos de `uploads/`.
+
+Objetivo actual de despliegue inicial:
+
+- Servidor: `192.168.0.89`
+- Ruta remota: `~/Developer/Flask/Contable`
+
+Variables recomendadas en `.env` para este caso:
+
+- `DEPLOY_SSH_HOST=192.168.0.89`
+- `DEPLOY_REMOTE_PROJECT_PATH=~/Developer/Flask/Contable`
+- `DEPLOY_FIRST_SYNC_DATA=1`
 
 ## Respaldo a GitHub
 

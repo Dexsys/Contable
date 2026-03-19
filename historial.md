@@ -6,6 +6,19 @@
 
 ---
 
+## [1.2026.0319.2] - 2026-03-19
+
+### Agregado
+- Soporte de primer despliegue con sincronización de datos locales: `instance/*.db` y `uploads/`.
+- Variable `DEPLOY_FIRST_SYNC_DATA` para controlar la sincronización inicial de datos.
+
+### Modificado
+- Script de deploy ahora resuelve correctamente rutas remotas con `~` (home del usuario), por ejemplo `~/Developer/Flask/Contable`.
+- Ajustes de `.gitignore` para evitar respaldar archivos sensibles/locales (`env`, `*.env`, `*.local`, bases sqlite locales y uploads temporales).
+
+### Infraestructura
+- Preparación de despliegue para servidor `192.168.0.89` en ruta `~/Developer/Flask/Contable`.
+
 ## [1.2026.0319.1] - 2026-03-19
 
 ### Agregado

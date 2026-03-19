@@ -52,6 +52,54 @@ def ensure_remote_dirs(sftp: paramiko.SFTPClient, remote_project_path: str, file
             existing.add(current)
 
 
+def ensure_remote_dir(sftp: paramiko.SFTPClient, remote_path: str) -> None:
+    parts = [chunk for chunk in remote_path.replace("\\", "/").split("/") if chunk]
+    if remote_path.startswith("/"):
+        current = "/"
+    else:
+        current = ""
+
+    for part in parts:
+        current = f"{current.rstrip('/')}/{part}" if current else part
+        try:
+            sftp.stat(current)
+        except FileNotFoundError:
+            sftp.mkdir(current)
+
+
+def upload_runtime_data(
+    sftp: paramiko.SFTPClient,
+    remote_project_path: str,
+    local_instance: Path,
+    local_uploads: Path,
+) -> tuple[int, int]:
+    db_uploaded = 0
+    upload_files = 0
+
+    if local_instance.exists():
+        db_files = list(local_instance.glob("*.db")) + list(local_instance.glob("*.sqlite")) + list(local_instance.glob("*.sqlite3"))
+        remote_instance_dir = posixpath.join(remote_project_path, "instance")
+        ensure_remote_dir(sftp, remote_instance_dir)
+        for db_file in db_files:
+            remote_file = posixpath.join(remote_instance_dir, db_file.name)
+            sftp.put(str(db_file), remote_file)
+            db_uploaded += 1
+
+    if local_uploads.exists():
+        remote_upload_dir = posixpath.join(remote_project_path, "uploads")
+        ensure_remote_dir(sftp, remote_upload_dir)
+        for local_file in local_uploads.rglob("*"):
+            if not local_file.is_file():
+                continue
+            rel = local_file.relative_to(local_uploads).as_posix()
+            remote_file = posixpath.join(remote_upload_dir, rel)
+            ensure_remote_dir(sftp, posixpath.dirname(remote_file))
+            sftp.put(str(local_file), remote_file)
+            upload_files += 1
+
+    return db_uploaded, upload_files
+
+
 def upload_tracked_files(sftp: paramiko.SFTPClient, remote_project_path: str, file_paths: list[str]) -> None:
     ensure_remote_dirs(sftp, remote_project_path, file_paths)
     for rel in file_paths:
@@ -77,6 +125,14 @@ def run_remote(ssh: paramiko.SSHClient, command: str, sudo_password: str | None 
     return out.strip()
 
 
+def resolve_remote_path(ssh: paramiko.SSHClient, remote_python: str, path_value: str) -> str:
+    cmd = f"{remote_quote(remote_python)} -c {remote_quote(f'import os; print(os.path.expanduser({path_value!r}))')}"
+    resolved = run_remote(ssh, cmd)
+    if not resolved:
+        raise RuntimeError("No fue posible resolver DEPLOY_REMOTE_PROJECT_PATH en el servidor remoto")
+    return resolved
+
+
 def load_required_env() -> dict[str, str]:
     load_dotenv(ROOT / ".env")
     env = {
@@ -88,6 +144,7 @@ def load_required_env() -> dict[str, str]:
         "remote_python": os.getenv("DEPLOY_PYTHON", "python3").strip(),
         "remote_venv": os.getenv("DEPLOY_REMOTE_VENV", ".venv").strip(),
         "remote_project": os.getenv("DEPLOY_REMOTE_PROJECT_PATH", "").strip(),
+        "first_sync_data": os.getenv("DEPLOY_FIRST_SYNC_DATA", "1").strip(),
         "public_url": os.getenv("DEPLOY_PUBLIC_URL", "").strip(),
         "app_port": os.getenv("DEPLOY_APP_PORT", "5200").strip(),
     }
@@ -158,9 +215,6 @@ def deploy() -> None:
     tracked = git_tracked_files()
     env = load_required_env()
 
-    service_content = build_service_content(env["remote_project"], env["service_name"])
-    nginx_content = build_nginx_content(env["public_url"], env["remote_project"], env["app_port"])
-
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     ssh.connect(
@@ -172,30 +226,46 @@ def deploy() -> None:
     )
 
     try:
-        run_remote(ssh, f"mkdir -p {remote_quote(env['remote_project'])}")
+        remote_project = resolve_remote_path(ssh, env["remote_python"], env["remote_project"])
+        service_content = build_service_content(remote_project, env["service_name"])
+        nginx_content = build_nginx_content(env["public_url"], remote_project, env["app_port"])
+
+        run_remote(ssh, f"mkdir -p {remote_quote(remote_project)}")
         sftp = ssh.open_sftp()
         try:
-            upload_tracked_files(sftp, env["remote_project"], tracked)
+            upload_tracked_files(sftp, remote_project, tracked)
 
-            remote_service_path = posixpath.join(env["remote_project"], f"{env['service_name']}.service")
+            sync_data = env["first_sync_data"].lower() in ("1", "true", "yes", "y")
+            if sync_data:
+                db_count, upload_count = upload_runtime_data(
+                    sftp,
+                    remote_project,
+                    ROOT / "instance",
+                    ROOT / "uploads",
+                )
+                print(f"Primer sync de datos: {db_count} base(s) y {upload_count} archivo(s) de uploads copiados")
+            else:
+                print("Primer sync de datos deshabilitado por DEPLOY_FIRST_SYNC_DATA")
+
+            remote_service_path = posixpath.join(remote_project, f"{env['service_name']}.service")
             with sftp.file(remote_service_path, "w") as service_file:
                 service_file.write(service_content)
 
-            remote_nginx_path = posixpath.join(env["remote_project"], f"nginx_{env['service_name']}.conf")
+            remote_nginx_path = posixpath.join(remote_project, f"nginx_{env['service_name']}.conf")
             with sftp.file(remote_nginx_path, "w") as nginx_file:
                 nginx_file.write(nginx_content)
         finally:
             sftp.close()
 
-        venv_path = posixpath.join(env["remote_project"], env["remote_venv"])
+        venv_path = posixpath.join(remote_project, env["remote_venv"])
         flask_app = "app:create_app"
 
-        run_remote(ssh, f"cd {remote_quote(env['remote_project'])} && {remote_quote(env['remote_python'])} -m venv {remote_quote(env['remote_venv'])}")
+        run_remote(ssh, f"cd {remote_quote(remote_project)} && {remote_quote(env['remote_python'])} -m venv {remote_quote(env['remote_venv'])}")
         run_remote(
             ssh,
             " && ".join(
                 [
-                    f"cd {remote_quote(env['remote_project'])}",
+                    f"cd {remote_quote(remote_project)}",
                     f"{remote_quote(venv_path + '/bin/pip')} install --upgrade pip",
                     f"{remote_quote(venv_path + '/bin/pip')} install -r requirements.txt",
                 ]
@@ -205,7 +275,7 @@ def deploy() -> None:
             ssh,
             " && ".join(
                 [
-                    f"cd {remote_quote(env['remote_project'])}",
+                    f"cd {remote_quote(remote_project)}",
                     f"FLASK_APP={flask_app} {remote_quote(venv_path + '/bin/flask')} db upgrade",
                 ]
             ),
@@ -216,7 +286,7 @@ def deploy() -> None:
             ssh,
             " && ".join(
                 [
-                    f"cp {remote_quote(posixpath.join(env['remote_project'], service_name + '.service'))} /etc/systemd/system/{service_name}.service",
+                    f"cp {remote_quote(posixpath.join(remote_project, service_name + '.service'))} /etc/systemd/system/{service_name}.service",
                     "systemctl daemon-reload",
                     f"systemctl enable {service_name}",
                     f"systemctl restart {service_name}",
@@ -231,7 +301,7 @@ def deploy() -> None:
             " && ".join(
                 [
                     "command -v nginx >/dev/null 2>&1 || (apt-get update && apt-get install -y nginx)",
-                    f"cp {remote_quote(posixpath.join(env['remote_project'], 'nginx_' + service_name + '.conf'))} /etc/nginx/sites-available/{service_name}",
+                    f"cp {remote_quote(posixpath.join(remote_project, 'nginx_' + service_name + '.conf'))} /etc/nginx/sites-available/{service_name}",
                     f"ln -sfn /etc/nginx/sites-available/{service_name} /etc/nginx/sites-enabled/{service_name}",
                     "nginx -t",
                     "systemctl reload nginx",
