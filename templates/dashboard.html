@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Contable | Panel Banco</title>
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+    <div class="bg-grid"></div>
+    <section class="session-bar">
+        <div class="session-info">
+            <strong id="session-email">Sin sesión</strong>
+            <span>Rol: <b id="session-role">-</b></span>
+        </div>
+        <div class="session-actions">
+            <button type="button" id="switch-user-btn">Cambiar usuario</button>
+            <button type="button" id="logout-btn">Cerrar sesión</button>
+        </div>
+    </section>
+    <header class="hero">
+        <div>
+            <p class="eyebrow">Control Contable</p>
+            <h1>Libro Banco y Resumen Jerarquico</h1>
+            <p class="subtitle">Movimientos al dia, cuentas por nivel y detalle expandible por nodo.</p>
+        </div>
+        <div class="hero-kpis">
+            <article>
+                <span>Saldo Anterior</span>
+                <strong id="kpi-prev-balance">$0</strong>
+            </article>
+            <article>
+                <span>Ingresos del Periodo</span>
+                <strong id="kpi-credit" class="kpi-income">$0</strong>
+            </article>
+            <article>
+                <span>Egresos del Periodo</span>
+                <strong id="kpi-debit" class="kpi-expense">$0</strong>
+            </article>
+            <article>
+                <span>Saldo del Periodo</span>
+                <strong id="kpi-period-balance">$0</strong>
+            </article>
+            <article>
+                <span>Saldo Acumulado Final</span>
+                <strong id="kpi-balance">$0</strong>
+            </article>
+            <article>
+                <span>Movimientos del Periodo</span>
+                <strong id="kpi-entries">0</strong>
+            </article>
+        </div>
+    </header>
+
+    <main class="layout">
+        <section class="card span-2 menu-card">
+            <h2>Menu de Acciones</h2>
+            <div class="menu-actions" role="tablist" aria-label="Paneles">
+                <button type="button" class="menu-btn active" data-panel="panel-summary">Resumen</button>
+                <button type="button" class="menu-btn" data-panel="panel-entry" data-permission="create_entries">Registrar Movimiento</button>
+                <button type="button" class="menu-btn" data-panel="panel-deposits" data-permission="manage_term_deposits">Depositos a Plazo</button>
+                <button type="button" class="menu-btn" data-panel="panel-vouchers" data-permission="create_vouchers">Comprobantes</button>
+                <button type="button" class="menu-btn" data-panel="panel-recent">Ultimos Movimientos</button>
+                <button type="button" class="menu-btn" data-panel="panel-users" data-permission="manage_users">Usuarios y Roles</button>
+                <button type="button" class="menu-btn" data-panel="panel-audit" data-permission="manage_users">Log de Auditoría</button>
+            </div>
+        </section>
+
+        <section class="card controls">
+            <h2>Filtros de Reporte</h2>
+            <form id="filter-form" class="grid-form">
+                <label>Año
+                    <select id="year">
+                        <option value="">Todos</option>
+                    </select>
+                </label>
+                <label>Mes
+                    <select id="month">
+                        <option value="">Todos</option>
+                        <option value="1">Enero</option>
+                        <option value="2">Febrero</option>
+                        <option value="3">Marzo</option>
+                        <option value="4">Abril</option>
+                        <option value="5">Mayo</option>
+                        <option value="6">Junio</option>
+                        <option value="7">Julio</option>
+                        <option value="8">Agosto</option>
+                        <option value="9">Septiembre</option>
+                        <option value="10">Octubre</option>
+                        <option value="11">Noviembre</option>
+                        <option value="12">Diciembre</option>
+                    </select>
+                </label>
+                <div class="actions">
+                    <button type="submit">Actualizar Resumen</button>
+                </div>
+            </form>
+        </section>
+
+        <section class="card panel" id="panel-entry" hidden>
+            <h2>Registrar Movimiento</h2>
+            <form id="entry-form" class="grid-form">
+                <label>Fecha
+                    <input type="date" name="date" required>
+                </label>
+                <label>Tipo
+                    <select name="kind" required>
+                        <option value="ingreso">Ingreso</option>
+                        <option value="egreso">Egreso</option>
+                    </select>
+                </label>
+                <label>Monto
+                    <input type="number" name="amount" min="1" step="0.01" required>
+                </label>
+                <label>Cuenta
+                    <input list="account-options" name="account_code" placeholder="1.01.01" required>
+                </label>
+                <label class="wide">Descripcion
+                    <input type="text" name="description" placeholder="Detalle del movimiento" required>
+                </label>
+                <label>Referencia
+                    <input type="text" name="reference" placeholder="Opcional">
+                </label>
+                <label>Imagen Respaldo
+                    <input type="file" name="receipt_image" accept="image/png,image/jpeg,image/webp,image/gif">
+                </label>
+                <label class="wide">Observacion
+                    <input type="text" name="note" placeholder="Opcional">
+                </label>
+                <div class="actions wide">
+                    <button type="submit">Guardar Movimiento</button>
+                </div>
+            </form>
+        </section>
+
+        <section class="card panel" id="panel-deposits" hidden>
+            <h2>Depositos a Plazo</h2>
+            <div class="split">
+                <form id="open-deposit-form" class="grid-form compact">
+                    <h3>Apertura</h3>
+                    <label>Codigo
+                        <input type="text" name="code" placeholder="DP-2026-001" required>
+                    </label>
+                    <label>Fecha Apertura
+                        <input type="date" name="opened_at" required>
+                    </label>
+                    <label>Monto
+                        <input type="number" name="principal_amount" min="1" step="0.01" required>
+                    </label>
+                    <label>Institucion
+                        <input type="text" name="institution" placeholder="Banco">
+                    </label>
+                    <div class="actions">
+                        <button type="submit">Registrar Apertura</button>
+                    </div>
+                </form>
+
+                <form id="rescue-deposit-form" class="grid-form compact">
+                    <h3>Rescate</h3>
+                    <label>Codigo DP
+                        <input type="text" name="code" placeholder="DP-2026-001" required>
+                    </label>
+                    <label>Fecha Rescate
+                        <input type="date" name="rescued_at" required>
+                    </label>
+                    <label>Monto Rescate
+                        <input type="number" name="rescue_amount" min="1" step="0.01" required>
+                    </label>
+                    <div class="actions">
+                        <button type="submit">Registrar Rescate</button>
+                    </div>
+                </form>
+            </div>
+        </section>
+
+        <section class="card span-2 panel" id="panel-vouchers" hidden>
+            <h2>Ingreso de Comprobantes (Multi-linea)</h2>
+            <form id="voucher-form" class="grid-form">
+                <label>Presentador
+                    <input type="text" name="presenter_name" placeholder="Nombre" required>
+                </label>
+                <label>Email Presentador
+                    <input type="email" name="presenter_email" placeholder="usuario@colbun.cl" required>
+                </label>
+                <label>Fecha Comprobante
+                    <input type="date" name="voucher_date" required>
+                </label>
+                <label>Aprobador solicitado
+                    <select name="assigned_approver_email">
+                        <option value="">Auto (segun regla)</option>
+                        <option value="kazat@colbun.cl">kazat@colbun.cl</option>
+                        <option value="lcorales@colbun.cl">lcorales@colbun.cl</option>
+                    </select>
+                </label>
+                <label class="wide">Descripcion general
+                    <input type="text" name="description" placeholder="Resumen del comprobante">
+                </label>
+                <label class="wide">Nota solicitud de aprobación
+                    <input type="text" name="request_note" placeholder="Observaciones para aprobador">
+                </label>
+                <label>Imagen respaldo
+                    <input type="file" name="receipt_image" accept="image/png,image/jpeg,image/webp,image/gif">
+                </label>
+            </form>
+
+            <div class="lineas-head">
+                <h3>Lineas del comprobante</h3>
+                <button type="button" id="add-voucher-line">Agregar linea</button>
+            </div>
+            <div id="voucher-lines" class="voucher-lines"></div>
+            <div class="actions">
+                <button type="button" id="submit-voucher">Solicitar aprobación</button>
+            </div>
+
+            <h3>Pendientes de aprobación</h3>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Nro</th>
+                            <th>Fecha</th>
+                            <th>Presentador</th>
+                            <th>Aprobador</th>
+                            <th>Lineas</th>
+                            <th>Estado</th>
+                            <th>Motivo rechazo</th>
+                            <th>Accion</th>
+                        </tr>
+                    </thead>
+                    <tbody id="voucher-pending-body"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="card span-2 panel" id="panel-summary">
+            <h2>Resumen de Movimientos</h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Fecha</th>
+                            <th>CtaCtble</th>
+                            <th>Ingreso</th>
+                            <th>Egreso</th>
+                            <th>Observación</th>
+                            <th>URL</th>
+                            <th>Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody id="summary-body"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="card span-2 panel" id="panel-recent" hidden>
+            <h2>Ultimos Movimientos</h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Fecha</th>
+                            <th>Cuenta</th>
+                            <th>Descripcion</th>
+                            <th>Egreso</th>
+                            <th>Ingreso</th>
+                            <th>Tipo</th>
+                            <th>Respaldo</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recent-body"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="card span-2 panel" id="panel-audit" hidden>
+            <h2>Log de Auditoría</h2>
+            <form id="audit-filter-form" class="grid-form">
+                <label>Usuario (email)
+                    <input type="text" id="audit-filter-email" placeholder="usuario@colbun.cl">
+                </label>
+                <label>Acción
+                    <select id="audit-filter-action">
+                        <option value="">Todas</option>
+                        <option value="login">login</option>
+                        <option value="login_failed">login_failed</option>
+                        <option value="logout">logout</option>
+                        <option value="entry_created">entry_created</option>
+                        <option value="entry_updated">entry_updated</option>
+                        <option value="entry_deleted">entry_deleted</option>
+                        <option value="term_deposit_opened">term_deposit_opened</option>
+                        <option value="term_deposit_rescued">term_deposit_rescued</option>
+                        <option value="voucher_created">voucher_created</option>
+                        <option value="voucher_approved">voucher_approved</option>
+                        <option value="voucher_rejected">voucher_rejected</option>
+                        <option value="user_role_changed">user_role_changed</option>
+                    </select>
+                </label>
+                <div class="actions">
+                    <button type="submit">Buscar</button>
+                </div>
+            </form>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Fecha/Hora</th>
+                            <th>Usuario</th>
+                            <th>Acción</th>
+                            <th>Entidad</th>
+                            <th>ID</th>
+                            <th>Detalle</th>
+                            <th>IP</th>
+                        </tr>
+                    </thead>
+                    <tbody id="audit-body"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="card span-2 panel" id="panel-users" hidden>
+            <h2>Administración de Usuarios</h2>
+            <p class="subtitle">Disponible para rol Tesorero o Administrador.</p>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Email</th>
+                            <th>Nombre</th>
+                            <th>Rol actual</th>
+                            <th>Rol efectivo</th>
+                            <th>Acción</th>
+                        </tr>
+                    </thead>
+                    <tbody id="users-body"></tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <datalist id="account-options"></datalist>
+    <div id="toast" class="toast" aria-live="polite"></div>
+
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

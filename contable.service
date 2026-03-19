@@ -1,0 +1,16 @@
+[Unit]
+Description=contable Flask Service
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/Developer/Flask/contable
+Environment="PATH=/home/ubuntu/Developer/Flask/contable/.venv/bin"
+ExecStart=/home/ubuntu/Developer/Flask/contable/.venv/bin/gunicorn --config /home/ubuntu/Developer/Flask/contable/gunicorn_config.py wsgi:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
