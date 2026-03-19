@@ -4,7 +4,7 @@ Aplicación Flask con patrón factory, SQLAlchemy y migraciones Alembic para ope
 
 ## Estado
 
-- Version: 1.2026.0319.2
+- Version: 1.2026.0319
 - Ultima actualizacion: 2026-03-19
 - URL: http://contable.dexsys.cl
 - Repositorio: https://github.com/Dexsys/Contable.git

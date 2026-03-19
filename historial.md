@@ -6,7 +6,7 @@
 
 ---
 
-## [1.2026.0319.3] - 2026-03-19
+## [1.2026.0319] - 2026-03-19
 
 ### Modificado
 - Actualización de `TODO.md` con estado real del proyecto Contable.
