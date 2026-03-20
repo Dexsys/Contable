@@ -19,6 +19,12 @@
 - Campos numéricos de ingreso y edición ahora usan máscara con separador de miles.
 - Saldos destacados por signo: azul para positivos y rojo para negativos.
 - Diferenciación visual del fondo por ambiente: celeste en productivo y verde agua en desarrollo.
+- Script de deploy incorpora sincronización post-deploy desde servidor hacia entorno local de desarrollo (BD reemplazada y uploads sin sobreescritura).
+- Nuevo modo manual de sincronización desde servidor sin deploy: `python deploy_to_server.py --sync-from-server-only`.
+- Nuevo helper `sync_runtime_from_server.py` para ejecutar sincronización manual con comando directo.
+- Deploy blindado para no sobrescribir producción con datos locales: por defecto no sube `instance/` ni `uploads/` al servidor.
+- Variable `DEPLOY_FIRST_SYNC_DATA` marcada como deprecada para evitar inversiones de flujo de datos.
+- Nueva variable explícita `DEPLOY_PUSH_RUNTIME_TO_SERVER` (por defecto `0`) para casos excepcionales de copia local->servidor.
 
 ## [1.2026.0319] - 2026-03-19
 

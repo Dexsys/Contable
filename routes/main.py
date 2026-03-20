@@ -1,6 +1,7 @@
 import datetime as dt
 import json
 import os
+import re
 import uuid
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -12,14 +13,32 @@ from sqlalchemy import func
 from werkzeug.utils import secure_filename
 
 from extensions import db
-from models import Account, AuditLog, BankStatement, LedgerEntry, TermDeposit, Voucher, VoucherLine
+from models import Account, AuditLog, BankStatement, LedgerEntry, LedgerEntryAttachment, TermDeposit, TreasuryDocument, Voucher, VoucherLine
 from routes.security import get_current_user, require_permission
 
 main_bp = Blueprint("main", __name__)
 
-ALLOWED_RECEIPT_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "gif"}
+ALLOWED_RECEIPT_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "gif", "pdf", "xlsx", "xls", "doc", "docx"}
 ALLOWED_STATEMENT_EXTENSIONS = {"pdf", "xlsx"}
+ALLOWED_LIBRARY_EXTENSIONS = {
+    "pdf", "xlsx", "xls", "doc", "docx", "ppt", "pptx", "csv", "txt",
+    "png", "jpg", "jpeg", "webp", "gif",
+}
 MAIN_APPROVERS = ["kazat@colbun.cl", "lcorales@colbun.cl"]
+MONTH_NAMES = {
+    1: "Enero",
+    2: "Febrero",
+    3: "Marzo",
+    4: "Abril",
+    5: "Mayo",
+    6: "Junio",
+    7: "Julio",
+    8: "Agosto",
+    9: "Septiembre",
+    10: "Octubre",
+    11: "Noviembre",
+    12: "Diciembre",
+}
 
 
 def write_audit_log(action: str, entity: str | None = None, entity_id: int | None = None, detail: str | None = None):
@@ -96,13 +115,39 @@ def allowed_statement(filename: str) -> bool:
     return ext in ALLOWED_STATEMENT_EXTENSIONS
 
 
+def allowed_library_file(filename: str) -> bool:
+    if not filename or "." not in filename:
+        return False
+    ext = filename.rsplit(".", 1)[1].lower()
+    return ext in ALLOWED_LIBRARY_EXTENSIONS
+
+
+def parse_statement_period_from_filename(filename: str) -> tuple[int | None, int | None]:
+    """Extrae periodo desde nombre tipo yyyy-mm.pdf|xlsx."""
+    base = secure_filename(os.path.basename(filename or ""))
+    match = re.fullmatch(r"(\d{4})-(\d{2})\.(pdf|xlsx)", base, flags=re.IGNORECASE)
+    if not match:
+        return None, None
+
+    year = int(match.group(1))
+    month = int(match.group(2))
+    if month < 1 or month > 12:
+        return None, None
+    return year, month
+
+
+def default_statement_description(year: int, month: int) -> str:
+    month_name = MONTH_NAMES.get(month, f"Mes {month:02d}")
+    return f"Cartola {month_name} del año {year}"
+
+
 def save_receipt_file(file_storage):
     if not file_storage or not file_storage.filename:
         return None
 
     filename = secure_filename(file_storage.filename)
     if not allowed_receipt(filename):
-        raise ValueError("Formato de imagen no permitido. Usa png, jpg, jpeg, webp o gif")
+        raise ValueError("Formato de respaldo no permitido. Usa PDF, Excel, Word o imagen")
 
     ext = filename.rsplit(".", 1)[1].lower()
     unique_name = f"entry_{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.{ext}"
@@ -112,6 +157,78 @@ def save_receipt_file(file_storage):
     full_path = os.path.join(folder, unique_name)
     file_storage.save(full_path)
     return unique_name
+
+
+def delete_receipt_file(filename: str | None) -> None:
+    if not filename:
+        return
+    folder = current_app.config["UPLOAD_FOLDER"]
+    safe_name = secure_filename(filename)
+    full_path = os.path.join(folder, safe_name)
+    if os.path.exists(full_path):
+        os.remove(full_path)
+
+
+def persist_entry_attachments(entry: LedgerEntry, files) -> list[LedgerEntryAttachment]:
+    stored = []
+    for file_storage in files:
+        if not file_storage or not file_storage.filename:
+            continue
+        saved_name = save_receipt_file(file_storage)
+        ext = saved_name.rsplit(".", 1)[1].lower() if "." in saved_name else ""
+        file_storage.seek(0, os.SEEK_END)
+        size_bytes = int(file_storage.tell() or 0)
+        file_storage.seek(0)
+        attachment = LedgerEntryAttachment(
+            entry_id=entry.id,
+            filename=saved_name,
+            original_filename=file_storage.filename,
+            file_type=ext,
+            file_size_bytes=size_bytes,
+        )
+        db.session.add(attachment)
+        stored.append(attachment)
+    return stored
+
+
+def get_entry_attachments_payload(entry: LedgerEntry) -> list[dict]:
+    attachments = []
+    rows = entry.attachments.order_by(LedgerEntryAttachment.created_at.asc(), LedgerEntryAttachment.id.asc()).all()
+    for item in rows:
+        attachments.append(
+            {
+                "id": item.id,
+                "url": url_for("main.get_uploaded_file", filename=item.filename),
+                "filename": item.filename,
+                "original_filename": item.original_filename,
+                "file_type": item.file_type,
+                "file_size_bytes": item.file_size_bytes,
+            }
+        )
+
+    # Compatibilidad hacia atrás: incluye el respaldo histórico si no está duplicado.
+    if entry.receipt_image_path:
+        exists = any(att.get("filename") == entry.receipt_image_path for att in attachments)
+        if not exists:
+            ext = entry.receipt_image_path.rsplit(".", 1)[1].lower() if "." in entry.receipt_image_path else ""
+            attachments.insert(
+                0,
+                {
+                    "id": None,
+                    "url": url_for("main.get_uploaded_file", filename=entry.receipt_image_path),
+                    "filename": entry.receipt_image_path,
+                    "original_filename": entry.receipt_image_path,
+                    "file_type": ext,
+                    "file_size_bytes": None,
+                },
+            )
+
+    return attachments
+
+
+def get_first_attachment_url(entry: LedgerEntry) -> str | None:
+    payload = get_entry_attachments_payload(entry)
+    return payload[0]["url"] if payload else None
 
 
 def save_statement_file(file_storage):
@@ -127,6 +244,25 @@ def save_statement_file(file_storage):
     unique_name = f"stmt_{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.{ext}"
 
     folder = current_app.config["UPLOAD_FOLDER"]
+    os.makedirs(folder, exist_ok=True)
+    full_path = os.path.join(folder, unique_name)
+    file_storage.save(full_path)
+    return unique_name, ext
+
+
+def save_library_file(file_storage):
+    if not file_storage or not file_storage.filename:
+        return None, None
+
+    original_filename = file_storage.filename
+    filename = secure_filename(original_filename)
+    if not allowed_library_file(filename):
+        raise ValueError("Formato no permitido para Biblioteca. Usa PDF, Office, texto o imagen")
+
+    ext = filename.rsplit(".", 1)[1].lower()
+    unique_name = f"lib_{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.{ext}"
+
+    folder = os.path.join(current_app.config["UPLOAD_FOLDER"], "library")
     os.makedirs(folder, exist_ok=True)
     full_path = os.path.join(folder, unique_name)
     file_storage.save(full_path)
@@ -448,6 +584,20 @@ def build_pending_voucher_summary_items():
                         if voucher.receipt_image_path
                         else None
                     ),
+                    "receipt_attachments": (
+                        [
+                            {
+                                "id": None,
+                                "url": url_for("main.get_uploaded_file", filename=voucher.receipt_image_path),
+                                "filename": voucher.receipt_image_path,
+                                "original_filename": voucher.receipt_image_path,
+                                "file_type": voucher.receipt_image_path.rsplit(".", 1)[1].lower() if "." in voucher.receipt_image_path else "",
+                                "file_size_bytes": None,
+                            }
+                        ]
+                        if voucher.receipt_image_path
+                        else []
+                    ),
                     "pending": True,
                     "voucher_id": voucher.id,
                     "presenter_email": voucher.presenter_email,
@@ -506,11 +656,8 @@ def summarize_entries(entries, include_entries=False):
                     "debit": float(entry.debit),
                     "credit": float(entry.credit),
                     "movement_type": entry.movement_type,
-                    "receipt_image_url": (
-                        url_for("main.get_uploaded_file", filename=entry.receipt_image_path)
-                        if entry.receipt_image_path
-                        else None
-                    ),
+                    "receipt_image_url": get_first_attachment_url(entry),
+                    "receipt_attachments": get_entry_attachments_payload(entry),
                 }
             )
 
@@ -564,22 +711,27 @@ def create_entry():
     payload = request.get_json(silent=True) if request.is_json else request.form.to_dict(flat=True)
     payload = payload or {}
     try:
-        receipt_image_path = save_receipt_file(request.files.get("receipt_image"))
+        legacy_file = request.files.get("receipt_image")
+        receipt_image_path = save_receipt_file(legacy_file) if legacy_file and legacy_file.filename else None
         entry = build_ledger_entry(payload, receipt_image_path=receipt_image_path)
         db.session.add(entry)
         db.session.flush()
+        persisted = persist_entry_attachments(entry, request.files.getlist("receipt_images"))
+
+        # Compatibilidad: si se subió un único archivo por el campo histórico, también queda visible en lista nueva.
+        if legacy_file and legacy_file.filename and not persisted:
+            persist_entry_attachments(entry, [legacy_file])
+
         db.session.commit()
         write_audit_log("entry_created", "ledger_entry", entry.id, entry.description[:200])
         db.session.commit()
+        attachments = get_entry_attachments_payload(entry)
         return jsonify(
             {
                 "status": "ok",
                 "entry_id": entry.id,
-                "receipt_image_url": (
-                    url_for("main.get_uploaded_file", filename=entry.receipt_image_path)
-                    if entry.receipt_image_path
-                    else None
-                ),
+                "receipt_image_url": attachments[0]["url"] if attachments else None,
+                "receipt_attachments": attachments,
             }
         ), 201
     except ValueError as exc:
@@ -593,7 +745,7 @@ def create_entry():
 @main_bp.patch("/api/entries/<int:entry_id>")
 @require_permission("create_entries")
 def update_entry(entry_id):
-    payload = request.get_json(silent=True) or request.form.to_dict(flat=True)
+    payload = request.get_json(silent=True) if request.is_json else request.form.to_dict(flat=True)
     payload = payload or {}
 
     entry = LedgerEntry.query.filter_by(id=entry_id).one_or_none()
@@ -634,6 +786,25 @@ def update_entry(entry_id):
         entry.raw_account_name = account_name
         entry.note = (payload.get("note") or entry.note or "").strip() or None
 
+        remove_receipt_raw = str(payload.get("remove_receipt") or "0").strip().lower()
+        remove_receipt = remove_receipt_raw in ("1", "true", "yes", "on")
+        new_receipt_file = request.files.get("receipt_image")
+
+        if remove_receipt and not (new_receipt_file and new_receipt_file.filename):
+            if entry.receipt_image_path:
+                delete_receipt_file(entry.receipt_image_path)
+                entry.receipt_image_path = None
+
+            for attachment in entry.attachments.all():
+                delete_receipt_file(attachment.filename)
+                db.session.delete(attachment)
+
+        if new_receipt_file and new_receipt_file.filename:
+            if entry.receipt_image_path:
+                delete_receipt_file(entry.receipt_image_path)
+            entry.receipt_image_path = save_receipt_file(new_receipt_file)
+            persist_entry_attachments(entry, [new_receipt_file])
+
         db.session.commit()
         write_audit_log("entry_updated", "ledger_entry", entry.id, entry.description[:200])
         db.session.commit()
@@ -652,6 +823,11 @@ def delete_entry(entry_id):
     entry = LedgerEntry.query.filter_by(id=entry_id).one_or_none()
     if not entry:
         return jsonify({"status": "error", "message": "Movimiento no encontrado"}), 404
+
+    if entry.receipt_image_path:
+        delete_receipt_file(entry.receipt_image_path)
+    for attachment in entry.attachments.all():
+        delete_receipt_file(attachment.filename)
 
     write_audit_log("entry_deleted", "ledger_entry", entry.id, entry.description[:200])
     db.session.delete(entry)
@@ -1035,11 +1211,8 @@ def recent_entries():
                     "movement_type": row.movement_type,
                     "account_code": row.account.code if row.account else row.raw_account_code,
                     "account_name": row.account.name if row.account else row.raw_account_name,
-                    "receipt_image_url": (
-                        url_for("main.get_uploaded_file", filename=row.receipt_image_path)
-                        if row.receipt_image_path
-                        else None
-                    ),
+                    "receipt_image_url": get_first_attachment_url(row),
+                    "receipt_attachments": get_entry_attachments_payload(row),
                 }
                 for row in rows
             ]
@@ -1266,13 +1439,6 @@ def reject_voucher(voucher_id):
 @require_permission("manage_term_deposits")
 def upload_bank_statement():
     try:
-        year = request.form.get("year", type=int)
-        month = request.form.get("month", type=int)
-        description = (request.form.get("description") or "").strip()
-
-        if not year or not month or month < 1 or month > 12:
-            return jsonify({"status": "error", "message": "año y mes (1-12) son requeridos"}), 400
-
         current_user = get_current_user(required=True, auto_create=False)
         if not current_user:
             return jsonify({"status": "error", "message": "No autenticado"}), 401
@@ -1281,7 +1447,26 @@ def upload_bank_statement():
         if not file or not file.filename:
             return jsonify({"status": "error", "message": "Archivo requerido"}), 400
 
+        parsed_year, parsed_month = parse_statement_period_from_filename(file.filename)
+        year = parsed_year or request.form.get("year", type=int)
+        month = parsed_month or request.form.get("month", type=int)
+        if not year or not month or month < 1 or month > 12:
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": "No se pudo obtener periodo. Usa nombre de archivo yyyy-mm.pdf o yyyy-mm.xlsx",
+                }
+            ), 400
+
+        description = (request.form.get("description") or "").strip()
+        if not description:
+            description = default_statement_description(year, month)
+
         filename, ext = save_statement_file(file)
+
+        file.seek(0, os.SEEK_END)
+        file_size_bytes = int(file.tell() or 0)
+        file.seek(0)
 
         existing = BankStatement.query.filter_by(year=year, month=month).one_or_none()
         if existing:
@@ -1293,12 +1478,10 @@ def upload_bank_statement():
             filename=filename,
             original_filename=file.filename,
             file_type=ext,
-            file_size_bytes=len(file.read()),
+            file_size_bytes=file_size_bytes,
             uploaded_by_email=current_user.email,
             description=description,
         )
-        file.seek(0)
-        statement.file_size_bytes = len(file.read())
         db.session.add(statement)
         write_audit_log("bank_statement_uploaded", "bank_statement", None, f"{year}-{month:02d}")
         db.session.commit()
@@ -1343,7 +1526,7 @@ def delete_bank_statement(statement_id):
 
 
 @main_bp.get("/api/bank-statements/<int:statement_id>/download")
-@require_permission("view_reports")
+@require_permission("manage_term_deposits")
 def download_bank_statement(statement_id):
     statement = BankStatement.query.filter_by(id=statement_id).one_or_none()
     if not statement:
@@ -1355,6 +1538,116 @@ def download_bank_statement(statement_id):
         return send_from_directory(folder, safe_name, as_attachment=True, download_name=statement.original_filename)
     except FileNotFoundError:
         return jsonify({"status": "error", "message": "Archivo no encontrado en servidor"}), 404
+
+
+@main_bp.get("/api/bank-statements/<int:statement_id>/view")
+@require_permission("view_reports")
+def view_bank_statement(statement_id):
+    statement = BankStatement.query.filter_by(id=statement_id).one_or_none()
+    if not statement:
+        return jsonify({"status": "error", "message": "Cartola no encontrada"}), 404
+
+    folder = current_app.config["UPLOAD_FOLDER"]
+    safe_name = secure_filename(statement.filename)
+    try:
+        return send_from_directory(folder, safe_name, as_attachment=False, download_name=statement.original_filename)
+    except FileNotFoundError:
+        return jsonify({"status": "error", "message": "Archivo no encontrado en servidor"}), 404
+
+
+@main_bp.post("/api/treasury-library")
+@require_permission("manage_term_deposits")
+def upload_treasury_document():
+    try:
+        current_user = get_current_user(required=True, auto_create=False)
+        if not current_user:
+            return jsonify({"status": "error", "message": "No autenticado"}), 401
+
+        file = request.files.get("file")
+        if not file or not file.filename:
+            return jsonify({"status": "error", "message": "Archivo requerido"}), 400
+
+        title = (request.form.get("title") or "").strip()
+        if not title:
+            title = os.path.splitext(secure_filename(file.filename))[0][:255]
+        description = (request.form.get("description") or "").strip() or None
+
+        filename, ext = save_library_file(file)
+        file.seek(0, os.SEEK_END)
+        file_size_bytes = int(file.tell() or 0)
+        file.seek(0)
+
+        document = TreasuryDocument(
+            title=title,
+            description=description,
+            filename=filename,
+            original_filename=file.filename,
+            file_type=ext,
+            file_size_bytes=file_size_bytes,
+            uploaded_by_email=current_user.email,
+        )
+        db.session.add(document)
+        write_audit_log("treasury_document_uploaded", "treasury_document", None, f"{title} ({file.filename})")
+        db.session.commit()
+        return jsonify({"status": "ok", "message": "Documento subido", "document": document.to_dict()}), 201
+    except ValueError as exc:
+        db.session.rollback()
+        return jsonify({"status": "error", "message": str(exc)}), 400
+
+
+@main_bp.get("/api/treasury-library")
+@require_permission("view_reports")
+def list_treasury_documents():
+    docs = TreasuryDocument.query.order_by(TreasuryDocument.uploaded_at.desc(), TreasuryDocument.id.desc()).all()
+    return jsonify({"items": [d.to_dict() for d in docs]})
+
+
+@main_bp.get("/api/treasury-library/<int:document_id>/view")
+@require_permission("view_reports")
+def view_treasury_document(document_id):
+    doc = TreasuryDocument.query.filter_by(id=document_id).one_or_none()
+    if not doc:
+        return jsonify({"status": "error", "message": "Documento no encontrado"}), 404
+
+    folder = os.path.join(current_app.config["UPLOAD_FOLDER"], "library")
+    safe_name = secure_filename(doc.filename)
+    try:
+        return send_from_directory(folder, safe_name, as_attachment=False, download_name=doc.original_filename)
+    except FileNotFoundError:
+        return jsonify({"status": "error", "message": "Archivo no encontrado en servidor"}), 404
+
+
+@main_bp.get("/api/treasury-library/<int:document_id>/download")
+@require_permission("manage_term_deposits")
+def download_treasury_document(document_id):
+    doc = TreasuryDocument.query.filter_by(id=document_id).one_or_none()
+    if not doc:
+        return jsonify({"status": "error", "message": "Documento no encontrado"}), 404
+
+    folder = os.path.join(current_app.config["UPLOAD_FOLDER"], "library")
+    safe_name = secure_filename(doc.filename)
+    try:
+        return send_from_directory(folder, safe_name, as_attachment=True, download_name=doc.original_filename)
+    except FileNotFoundError:
+        return jsonify({"status": "error", "message": "Archivo no encontrado en servidor"}), 404
+
+
+@main_bp.delete("/api/treasury-library/<int:document_id>")
+@require_permission("manage_term_deposits")
+def delete_treasury_document(document_id):
+    doc = TreasuryDocument.query.filter_by(id=document_id).one_or_none()
+    if not doc:
+        return jsonify({"status": "error", "message": "Documento no encontrado"}), 404
+
+    folder = os.path.join(current_app.config["UPLOAD_FOLDER"], "library")
+    filepath = os.path.join(folder, secure_filename(doc.filename))
+    if os.path.exists(filepath):
+        os.remove(filepath)
+
+    write_audit_log("treasury_document_deleted", "treasury_document", document_id, doc.title[:200])
+    db.session.delete(doc)
+    db.session.commit()
+    return jsonify({"status": "ok", "message": "Documento eliminado"}), 200
 
 
 @main_bp.get("/api/reports/export")

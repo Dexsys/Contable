@@ -7,6 +7,8 @@ const state = {
     editingEntry: null,
     loginResolver: null,
 };
+const THEME_STORAGE_KEY = "contas_theme";
+const SIDEBAR_STORAGE_KEY = "contas_sidebar_collapsed";
 
 const MONTH_LABELS = {
     1: "Enero",
@@ -45,6 +47,66 @@ function applySignedClass(element, value) {
 
 function qs(id) {
     return document.getElementById(id);
+}
+
+function applyTheme(theme) {
+    const isDark = theme === "dark";
+    document.body.setAttribute("data-theme", isDark ? "dark" : "light");
+    const toggleBtn = qs("theme-toggle-btn");
+    const icon = qs("theme-toggle-icon");
+    if (toggleBtn) {
+        toggleBtn.setAttribute("aria-label", isDark ? "Cambiar a modo claro" : "Cambiar a modo oscuro");
+        toggleBtn.setAttribute("title", isDark ? "Cambiar a modo claro" : "Cambiar a modo oscuro");
+    }
+    if (icon) {
+        icon.textContent = isDark ? "☀️" : "🌙";
+    }
+}
+function setupThemeToggle() {
+    const saved = localStorage.getItem(THEME_STORAGE_KEY);
+    applyTheme(saved === "dark" ? "dark" : "light");
+
+    const toggleBtn = qs("theme-toggle-btn");
+    if (!toggleBtn) {
+        return;
+    }
+
+    toggleBtn.addEventListener("click", () => {
+        const current = document.body.getAttribute("data-theme") === "dark" ? "dark" : "light";
+        const next = current === "dark" ? "light" : "dark";
+        localStorage.setItem(THEME_STORAGE_KEY, next);
+        applyTheme(next);
+    });
+}
+
+function applySidebarCollapsed(collapsed) {
+    document.body.classList.toggle("sidebar-collapsed", Boolean(collapsed));
+    const icon = qs("sidebar-toggle-icon");
+    const toggleBtn = qs("sidebar-toggle-btn");
+    if (icon) {
+        icon.textContent = collapsed ? "☰" : "✕";
+    }
+    if (toggleBtn) {
+        toggleBtn.setAttribute("aria-label", collapsed ? "Expandir menú" : "Colapsar menú");
+        toggleBtn.setAttribute("title", collapsed ? "Expandir menú" : "Colapsar menú");
+    }
+}
+
+function setupSidebarToggle() {
+    const saved = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    const initialCollapsed = saved === null ? window.innerWidth <= 980 : saved === "1";
+    applySidebarCollapsed(initialCollapsed);
+
+    const toggleBtn = qs("sidebar-toggle-btn");
+    if (!toggleBtn) {
+        return;
+    }
+
+    toggleBtn.addEventListener("click", () => {
+        const collapsed = !document.body.classList.contains("sidebar-collapsed");
+        applySidebarCollapsed(collapsed);
+        localStorage.setItem(SIDEBAR_STORAGE_KEY, collapsed ? "1" : "0");
+    });
 }
 
 function normalizeMoneyValue(value) {
@@ -140,8 +202,25 @@ function openEditEntryModal(entry) {
     qs("edit-entry-account-name").value = entry.account_name || "";
     qs("edit-entry-credit").value = String(entry.credit || 0);
     qs("edit-entry-debit").value = String(entry.debit || 0);
-    qs("edit-entry-reference").value = entry.reference || "";
     qs("edit-entry-note").value = entry.note || "";
+    qs("edit-entry-remove-receipt-flag").value = "0";
+    qs("edit-entry-receipt-image").value = "";
+    const removeBtn = qs("edit-entry-remove-receipt");
+    removeBtn.textContent = "Quitar respaldo";
+    const entryAttachments = Array.isArray(entry.receipt_attachments) ? entry.receipt_attachments : [];
+    removeBtn.disabled = entryAttachments.length === 0 && !entry.receipt_image_url;
+    const currentReceipt = qs("edit-entry-current-receipt");
+    if (currentReceipt) {
+        if (entryAttachments.length > 0) {
+            currentReceipt.innerHTML = entryAttachments
+                .map((att, idx) => `<a class="attachment" href="${att.url}" target="_blank" rel="noopener">Adjunto ${idx + 1}</a>`)
+                .join(" | ");
+        } else if (entry.receipt_image_url) {
+            currentReceipt.innerHTML = `<a class="attachment" href="${entry.receipt_image_url}" target="_blank" rel="noopener">Ver respaldo actual</a>`;
+        } else {
+            currentReceipt.textContent = "Sin respaldo cargado";
+        }
+    }
 
     const modal = qs("edit-entry-modal");
     qs("edit-entry-credit").value = formatMoneyForInput(qs("edit-entry-credit").value);
@@ -162,6 +241,28 @@ function setupEditEntryModal() {
 
     qs("edit-entry-close").addEventListener("click", closeEditEntryModal);
     qs("edit-entry-cancel").addEventListener("click", closeEditEntryModal);
+    qs("edit-entry-remove-receipt").addEventListener("click", () => {
+        const flag = qs("edit-entry-remove-receipt-flag");
+        const currentReceipt = qs("edit-entry-current-receipt");
+        const removeBtn = qs("edit-entry-remove-receipt");
+        const active = flag.value === "1";
+        flag.value = active ? "0" : "1";
+        if (flag.value === "1") {
+            currentReceipt.textContent = "El respaldo actual será eliminado al guardar";
+            removeBtn.textContent = "Deshacer quitar respaldo";
+        } else if ((state.editingEntry?.receipt_attachments || []).length > 0) {
+            currentReceipt.innerHTML = state.editingEntry.receipt_attachments
+                .map((att, idx) => `<a class="attachment" href="${att.url}" target="_blank" rel="noopener">Adjunto ${idx + 1}</a>`)
+                .join(" | ");
+            removeBtn.textContent = "Quitar respaldo";
+        } else if (state.editingEntry?.receipt_image_url) {
+            currentReceipt.innerHTML = `<a class="attachment" href="${state.editingEntry.receipt_image_url}" target="_blank" rel="noopener">Ver respaldo actual</a>`;
+            removeBtn.textContent = "Quitar respaldo";
+        } else {
+            currentReceipt.textContent = "Sin respaldo cargado";
+            removeBtn.textContent = "Quitar respaldo";
+        }
+    });
 
     modal.addEventListener("click", (event) => {
         if (event.target === modal) {
@@ -184,14 +285,21 @@ function setupEditEntryModal() {
             account_name: qs("edit-entry-account-name").value.trim(),
             credit: normalizeMoneyValue(qs("edit-entry-credit").value) || "0",
             debit: normalizeMoneyValue(qs("edit-entry-debit").value) || "0",
-            reference: qs("edit-entry-reference").value.trim(),
             note: qs("edit-entry-note").value.trim(),
         };
+
+        const formData = new FormData();
+        Object.entries(payload).forEach(([key, value]) => formData.set(key, value));
+        const receiptFile = qs("edit-entry-receipt-image")?.files?.[0];
+        formData.set("remove_receipt", qs("edit-entry-remove-receipt-flag").value || "0");
+        if (receiptFile) {
+            formData.set("receipt_image", receiptFile);
+        }
 
         try {
             await fetchJson(`/api/entries/${entryId}`, {
                 method: "PATCH",
-                body: JSON.stringify(payload),
+                body: formData,
             });
             closeEditEntryModal();
             await loadSummary();
@@ -500,8 +608,11 @@ function treeNodeTemplate(node) {
         node.entries.slice(0, 40).forEach((entry) => {
             const row = document.createElement("div");
             row.className = "entry-row";
-            const attachment = entry.receipt_image_url
-                ? `<a class="attachment" href="${entry.receipt_image_url}" target="_blank" rel="noopener">imagen</a>`
+            const attachments = Array.isArray(entry.receipt_attachments) ? entry.receipt_attachments : [];
+            const attachment = attachments.length > 0
+                ? attachments
+                    .map((att, idx) => `<a class="attachment" href="${att.url}" target="_blank" rel="noopener">Adjunto ${idx + 1}</a>`)
+                    .join(" | ")
                 : "";
             row.innerHTML = `
                 <span>${entry.entry_date}</span>
@@ -575,8 +686,11 @@ function renderSummary(summary) {
         if (entry.pending) {
             row.classList.add("pending-row");
         }
-        const attachment = entry.receipt_image_url
-            ? `<a class="attachment" href="${entry.receipt_image_url}" target="_blank" rel="noopener">Ver</a>`
+        const attachments = Array.isArray(entry.receipt_attachments) ? entry.receipt_attachments : [];
+        const attachment = attachments.length > 0
+            ? attachments
+                .map((att, idx) => `<a class="attachment" href="${att.url}" target="_blank" rel="noopener">Adjunto ${idx + 1}</a>`)
+                .join(" | ")
             : "-";
         const accountCell = `${entry.account_code || "-"} ${entry.account_name || ""}`.trim();
         const actions = !entry.pending && hasPermission("create_entries")
@@ -595,6 +709,22 @@ function renderSummary(summary) {
             <td>${attachment}</td>
             <td><div class="row-actions">${actions}</div></td>
         `;
+
+        const firstAttachmentUrl = attachments[0]?.url || entry.receipt_image_url;
+        if (firstAttachmentUrl) {
+            row.classList.add("summary-row-with-attachment");
+            row.title = "Click para abrir respaldo";
+            row.addEventListener("click", (event) => {
+                if (event.target.closest("a, button, input, select, textarea, label")) {
+                    return;
+                }
+                const newTab = window.open(firstAttachmentUrl, "_blank");
+                if (newTab) {
+                    newTab.opener = null;
+                }
+            });
+        }
+
         tbody.appendChild(row);
     });
 
@@ -821,7 +951,13 @@ function setupMenu() {
     }
 
     buttons.forEach((btn) => {
-        btn.addEventListener("click", () => activate(btn.dataset.panel));
+        btn.addEventListener("click", () => {
+            activate(btn.dataset.panel);
+            if (window.innerWidth <= 980) {
+                applySidebarCollapsed(true);
+                localStorage.setItem(SIDEBAR_STORAGE_KEY, "1");
+            }
+        });
     });
 
     activate(buttons[0]?.dataset.panel || "panel-summary");
@@ -860,8 +996,11 @@ async function loadRecent() {
 
     payload.items.forEach((item) => {
         const row = document.createElement("tr");
-        const attachment = item.receipt_image_url
-            ? `<a class="attachment" href="${item.receipt_image_url}" target="_blank" rel="noopener">Ver</a>`
+        const attachments = Array.isArray(item.receipt_attachments) ? item.receipt_attachments : [];
+        const attachment = attachments.length > 0
+            ? attachments
+                .map((att, idx) => `<a class="attachment" href="${att.url}" target="_blank" rel="noopener">Adjunto ${idx + 1}</a>`)
+                .join(" | ")
             : "-";
         row.innerHTML = `
             <td>${item.entry_date || ""}</td>
@@ -1161,11 +1300,12 @@ async function loadBankStatements() {
             const actions = canManage
                 ? `
                     <div class="row-actions">
+                        <a href="/api/bank-statements/${item.id}/view" class="view-btn" target="_blank" rel="noopener">Ver</a>
                         <a href="/api/bank-statements/${item.id}/download" class="download-btn">Descargar</a>
                         <button type="button" class="delete-statement-btn" data-id="${item.id}">Eliminar</button>
                     </div>
                 `
-                : `<a href="/api/bank-statements/${item.id}/download" class="download-btn">Descargar</a>`;
+                : `<a href="/api/bank-statements/${item.id}/view" class="view-btn" target="_blank" rel="noopener">Ver</a>`;
 
             row.innerHTML = `
                 <td>${item.year}-${String(item.month).padStart(2, "0")}</td>
@@ -1210,8 +1350,11 @@ function setupBankStatementsForm() {
     const form = qs("upload-statement-form");
     const actionsDiv = qs("upload-stmt-actions");
     const yearInput = qs("stmt-year");
+    const monthInput = qs("stmt-month");
+    const fileInput = qs("stmt-file");
+    const descriptionInput = qs("stmt-description");
 
-    if (!form || !actionsDiv || !yearInput) {
+    if (!form || !actionsDiv || !yearInput || !monthInput || !fileInput || !descriptionInput) {
         return;
     }
 
@@ -1225,14 +1368,42 @@ function setupBankStatementsForm() {
     const today = new Date();
     yearInput.value = today.getFullYear();
 
+    fileInput.addEventListener("change", () => {
+        const file = fileInput.files?.[0];
+        if (!file || !file.name) {
+            fileInput.setCustomValidity("");
+            return;
+        }
+
+        const match = String(file.name).trim().match(/^(\d{4})-(\d{2})\.(pdf|xlsx)$/i);
+        if (!match) {
+            fileInput.setCustomValidity("El archivo debe tener formato yyyy-mm.pdf o yyyy-mm.xlsx");
+            fileInput.reportValidity();
+            return;
+        }
+
+        fileInput.setCustomValidity("");
+        const year = Number(match[1]);
+        const month = Number(match[2]);
+        if (!month || month < 1 || month > 12) {
+            fileInput.setCustomValidity("El mes debe estar entre 01 y 12");
+            fileInput.reportValidity();
+            return;
+        }
+
+        yearInput.value = year;
+        monthInput.value = String(month);
+        descriptionInput.value = `Cartola ${MONTH_LABELS[month]} del año ${year}`;
+    });
+
     form.addEventListener("submit", async (event) => {
         event.preventDefault();
 
         const payload = new FormData();
-        payload.set("year", qs("stmt-year").value);
-        payload.set("month", qs("stmt-month").value);
-        payload.set("description", qs("stmt-description").value);
-        payload.set("file", qs("stmt-file").files[0]);
+        payload.set("year", yearInput.value);
+        payload.set("month", monthInput.value);
+        payload.set("description", descriptionInput.value);
+        payload.set("file", fileInput.files[0]);
 
         try {
             const result = await fetchJson("/api/bank-statements", {
@@ -1249,6 +1420,123 @@ function setupBankStatementsForm() {
     });
 }
 
+async function loadTreasuryLibrary() {
+    if (!hasPermission("view_reports")) {
+        return;
+    }
+
+    try {
+        const payload = await fetchJson("/api/treasury-library");
+        const tbody = qs("library-body");
+        if (!tbody) {
+            return;
+        }
+        tbody.innerHTML = "";
+
+        const canManage = hasPermission("manage_term_deposits");
+
+        payload.items.forEach((item) => {
+            const row = document.createElement("tr");
+            const uploadedAt = item.uploaded_at ? item.uploaded_at.replace("T", " ").slice(0, 16) : "-";
+            const actions = canManage
+                ? `
+                    <div class="row-actions">
+                        <a href="/api/treasury-library/${item.id}/view" class="view-btn" target="_blank" rel="noopener">Ver</a>
+                        <a href="/api/treasury-library/${item.id}/download" class="download-btn">Descargar</a>
+                        <button type="button" class="delete-library-btn" data-id="${item.id}">Eliminar</button>
+                    </div>
+                `
+                : `<a href="/api/treasury-library/${item.id}/view" class="view-btn" target="_blank" rel="noopener">Ver</a>`;
+
+            row.innerHTML = `
+                <td>${item.title || "-"}</td>
+                <td>${item.original_filename || "-"}</td>
+                <td><code>${(item.file_type || "").toUpperCase()}</code></td>
+                <td>${item.uploaded_by_email || "-"}</td>
+                <td>${uploadedAt}</td>
+                <td>${item.description || "-"}</td>
+                <td>${actions}</td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        if (canManage) {
+            tbody.querySelectorAll(".delete-library-btn").forEach((btn) => {
+                btn.addEventListener("click", async () => {
+                    const row = btn.closest("tr");
+                    const title = row?.children?.[0]?.textContent?.trim() || "documento";
+                    const accepted = window.confirm(`¿Seguro que deseas eliminar "${title}"?`);
+                    if (!accepted) {
+                        return;
+                    }
+
+                    try {
+                        await fetchJson(`/api/treasury-library/${btn.dataset.id}`, {
+                            method: "DELETE",
+                        });
+                        await loadTreasuryLibrary();
+                        toast("Documento eliminado");
+                    } catch (error) {
+                        toast(error.message, true);
+                    }
+                });
+            });
+        }
+    } catch (error) {
+        toast(error.message, true);
+    }
+}
+
+function setupTreasuryLibraryForm() {
+    const form = qs("upload-library-form");
+    const actionsDiv = qs("upload-lib-actions");
+    const titleInput = qs("lib-title");
+    const descriptionInput = qs("lib-description");
+    const fileInput = qs("lib-file");
+
+    if (!form || !actionsDiv || !titleInput || !descriptionInput || !fileInput) {
+        return;
+    }
+
+    if (!hasPermission("manage_term_deposits")) {
+        form.parentElement.innerHTML = '<p class="subtitle">Solo Tesoreros y Administradores pueden subir documentos.</p>';
+        return;
+    }
+
+    actionsDiv.style.display = "flex";
+
+    fileInput.addEventListener("change", () => {
+        const file = fileInput.files?.[0];
+        if (!file || !file.name) {
+            return;
+        }
+        if (!titleInput.value.trim()) {
+            titleInput.value = file.name.replace(/\.[^.]+$/, "");
+        }
+    });
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+
+        const payload = new FormData();
+        payload.set("title", titleInput.value.trim());
+        payload.set("description", descriptionInput.value.trim());
+        payload.set("file", fileInput.files[0]);
+
+        try {
+            const result = await fetchJson("/api/treasury-library", {
+                method: "POST",
+                body: payload,
+            });
+            form.reset();
+            await loadTreasuryLibrary();
+            toast(result.message || "Documento subido");
+        } catch (error) {
+            toast(error.message, true);
+        }
+    });
+}
+
 async function refreshAllVisibleData() {
     await Promise.all([
         loadSummary(),
@@ -1257,6 +1545,7 @@ async function refreshAllVisibleData() {
         loadUsers(),
         loadAuditLog(),
         loadBankStatements(),
+        loadTreasuryLibrary(),
     ]);
 }
 
@@ -1412,6 +1701,8 @@ function setupForms() {
 }
 
 async function bootstrap() {
+    setupThemeToggle();
+    setupSidebarToggle();
     const today = new Date().toISOString().slice(0, 10);
     [
         ...document.querySelectorAll('#entry-form input[type="date"]'),
@@ -1432,6 +1723,7 @@ async function bootstrap() {
     setupChangePasswordModal();
     setupReportsModal();
     setupBankStatementsForm();
+    setupTreasuryLibraryForm();
     setupPeriodFilters();
     setupMoneyMasks(document);
     qs("voucher-lines").appendChild(makeVoucherLineRow());

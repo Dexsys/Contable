@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import os
 import posixpath
 import shlex
@@ -100,6 +101,74 @@ def upload_runtime_data(
     return db_uploaded, upload_files
 
 
+def remote_file_exists(sftp: paramiko.SFTPClient, remote_path: str) -> bool:
+    try:
+        sftp.stat(remote_path)
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def walk_remote_files(sftp: paramiko.SFTPClient, remote_root: str) -> list[str]:
+    files: list[str] = []
+    stack = [remote_root]
+
+    while stack:
+        current = stack.pop()
+        for entry in sftp.listdir_attr(current):
+            child = posixpath.join(current, entry.filename)
+            is_dir = bool(entry.st_mode & 0o040000)
+            if is_dir:
+                stack.append(child)
+            else:
+                files.append(child)
+
+    return files
+
+
+def sync_runtime_data_from_server(
+    sftp: paramiko.SFTPClient,
+    remote_project_path: str,
+    local_instance: Path,
+    local_uploads: Path,
+) -> tuple[int, int, int]:
+    db_downloaded = 0
+    uploads_downloaded = 0
+    uploads_skipped = 0
+
+    remote_instance_dir = posixpath.join(remote_project_path, "instance")
+    if remote_file_exists(sftp, remote_instance_dir):
+        local_instance.mkdir(parents=True, exist_ok=True)
+        for entry in sftp.listdir_attr(remote_instance_dir):
+            remote_file = posixpath.join(remote_instance_dir, entry.filename)
+            if bool(entry.st_mode & 0o040000):
+                continue
+            lower_name = entry.filename.lower()
+            if not (lower_name.endswith(".db") or lower_name.endswith(".sqlite") or lower_name.endswith(".sqlite3")):
+                continue
+            local_file = local_instance / entry.filename
+            sftp.get(remote_file, str(local_file))
+            db_downloaded += 1
+
+    remote_uploads_dir = posixpath.join(remote_project_path, "uploads")
+    if remote_file_exists(sftp, remote_uploads_dir):
+        local_uploads.mkdir(parents=True, exist_ok=True)
+        for remote_file in walk_remote_files(sftp, remote_uploads_dir):
+            rel = posixpath.relpath(remote_file, remote_uploads_dir)
+            local_file = local_uploads / Path(rel)
+            local_file.parent.mkdir(parents=True, exist_ok=True)
+
+            # Requisito: no sobreescribir uploads existentes en desarrollo.
+            if local_file.exists():
+                uploads_skipped += 1
+                continue
+
+            sftp.get(remote_file, str(local_file))
+            uploads_downloaded += 1
+
+    return db_downloaded, uploads_downloaded, uploads_skipped
+
+
 def upload_tracked_files(sftp: paramiko.SFTPClient, remote_project_path: str, file_paths: list[str]) -> None:
     ensure_remote_dirs(sftp, remote_project_path, file_paths)
     for rel in file_paths:
@@ -133,7 +202,7 @@ def resolve_remote_path(ssh: paramiko.SSHClient, remote_python: str, path_value:
     return resolved
 
 
-def load_required_env() -> dict[str, str]:
+def load_required_env(*, require_public_url: bool = True) -> dict[str, str]:
     load_dotenv(ROOT / ".env")
     env = {
         "host": os.getenv("DEPLOY_SSH_HOST", "").strip(),
@@ -144,14 +213,33 @@ def load_required_env() -> dict[str, str]:
         "remote_python": os.getenv("DEPLOY_PYTHON", "python3").strip(),
         "remote_venv": os.getenv("DEPLOY_REMOTE_VENV", ".venv").strip(),
         "remote_project": os.getenv("DEPLOY_REMOTE_PROJECT_PATH", "").strip(),
-        "first_sync_data": os.getenv("DEPLOY_FIRST_SYNC_DATA", "1").strip(),
+        "first_sync_data": os.getenv("DEPLOY_FIRST_SYNC_DATA", "0").strip(),
+        "push_runtime_to_server": os.getenv("DEPLOY_PUSH_RUNTIME_TO_SERVER", "0").strip(),
+        "pull_runtime_after_deploy": os.getenv("DEPLOY_PULL_RUNTIME_AFTER_DEPLOY", "1").strip(),
         "public_url": os.getenv("DEPLOY_PUBLIC_URL", "").strip(),
         "app_port": os.getenv("DEPLOY_APP_PORT", "5200").strip(),
     }
-    for required in ("host", "user", "password", "remote_project", "public_url"):
+    required_fields = ["host", "user", "password", "remote_project"]
+    if require_public_url:
+        required_fields.append("public_url")
+
+    for required in required_fields:
         if not env[required]:
             raise RuntimeError(f"Variable requerida no definida en .env: {required}")
     return env
+
+
+def connect_ssh(env: dict[str, str]) -> paramiko.SSHClient:
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect(
+        hostname=env["host"],
+        port=int(env["port"]),
+        username=env["user"],
+        password=env["password"],
+        timeout=20,
+    )
+    return ssh
 
 
 def build_service_content(remote_project: str, service_name: str) -> str:
@@ -213,17 +301,9 @@ def deploy() -> None:
     run_local(["git", "rev-parse", "--is-inside-work-tree"])
     version, _ = update_release_docs("deploy")
     tracked = git_tracked_files()
-    env = load_required_env()
+    env = load_required_env(require_public_url=True)
 
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(
-        hostname=env["host"],
-        port=int(env["port"]),
-        username=env["user"],
-        password=env["password"],
-        timeout=20,
-    )
+    ssh = connect_ssh(env)
 
     try:
         remote_project = resolve_remote_path(ssh, env["remote_python"], env["remote_project"])
@@ -235,17 +315,24 @@ def deploy() -> None:
         try:
             upload_tracked_files(sftp, remote_project, tracked)
 
-            sync_data = env["first_sync_data"].lower() in ("1", "true", "yes", "y")
-            if sync_data:
+            push_runtime = env["push_runtime_to_server"].lower() in ("1", "true", "yes", "y")
+            legacy_sync_data = env["first_sync_data"].lower() in ("1", "true", "yes", "y")
+
+            if push_runtime:
                 db_count, upload_count = upload_runtime_data(
                     sftp,
                     remote_project,
                     ROOT / "instance",
                     ROOT / "uploads",
                 )
-                print(f"Primer sync de datos: {db_count} base(s) y {upload_count} archivo(s) de uploads copiados")
+                print(
+                    "ADVERTENCIA: runtime local -> servidor activado por DEPLOY_PUSH_RUNTIME_TO_SERVER. "
+                    f"{db_count} base(s) y {upload_count} upload(s) copiados"
+                )
             else:
-                print("Primer sync de datos deshabilitado por DEPLOY_FIRST_SYNC_DATA")
+                print("Seguro: deploy NO copia base de datos ni uploads locales hacia producción")
+                if legacy_sync_data:
+                    print("Aviso: DEPLOY_FIRST_SYNC_DATA está deprecada y ya no sube datos a producción")
 
             remote_service_path = posixpath.join(remote_project, f"{env['service_name']}.service")
             with sftp.file(remote_service_path, "w") as service_file:
@@ -310,14 +397,74 @@ def deploy() -> None:
             sudo_password=env["password"],
         )
 
+        should_pull_runtime = env["pull_runtime_after_deploy"].lower() in ("1", "true", "yes", "y")
+        if should_pull_runtime:
+            sftp = ssh.open_sftp()
+            try:
+                db_count, uploads_count, skipped_count = sync_runtime_data_from_server(
+                    sftp,
+                    remote_project,
+                    ROOT / "instance",
+                    ROOT / "uploads",
+                )
+            finally:
+                sftp.close()
+
+            print(
+                "Sync dev desde servidor: "
+                f"{db_count} base(s) descargadas/reemplazadas, "
+                f"{uploads_count} upload(s) nuevos descargados, "
+                f"{skipped_count} upload(s) existentes omitidos"
+            )
+        else:
+            print("Sync de runtime remoto->local deshabilitado por DEPLOY_PULL_RUNTIME_AFTER_DEPLOY")
+
         print(f"Deploy completado para versión {version}.")
+    finally:
+        ssh.close()
+
+
+def sync_from_server_only() -> None:
+    env = load_required_env(require_public_url=False)
+    ssh = connect_ssh(env)
+
+    try:
+        remote_project = resolve_remote_path(ssh, env["remote_python"], env["remote_project"])
+        sftp = ssh.open_sftp()
+        try:
+            db_count, uploads_count, skipped_count = sync_runtime_data_from_server(
+                sftp,
+                remote_project,
+                ROOT / "instance",
+                ROOT / "uploads",
+            )
+        finally:
+            sftp.close()
+
+        print(
+            "Sync manual desde servidor completado: "
+            f"{db_count} base(s) descargadas/reemplazadas, "
+            f"{uploads_count} upload(s) nuevos descargados, "
+            f"{skipped_count} upload(s) existentes omitidos"
+        )
     finally:
         ssh.close()
 
 
 def main() -> int:
     try:
-        deploy()
+        parser = argparse.ArgumentParser(description="Deploy y sincronizacion de runtime para Contable")
+        parser.add_argument(
+            "--sync-from-server-only",
+            action="store_true",
+            help="Descarga runtime desde servidor (instance y uploads) sin hacer deploy",
+        )
+        args = parser.parse_args()
+
+        if args.sync_from_server_only:
+            sync_from_server_only()
+        else:
+            deploy()
         return 0
     except Exception as exc:  # pylint: disable=broad-except
         print(str(exc), file=sys.stderr)

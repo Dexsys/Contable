@@ -147,9 +147,38 @@ class LedgerEntry(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     account = db.relationship("Account", backref=db.backref("entries", lazy="dynamic"))
+    attachments = db.relationship(
+        "LedgerEntryAttachment",
+        backref="entry",
+        lazy="dynamic",
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self) -> str:
         return f"<LedgerEntry {self.entry_date} {self.description[:30]}>"
+
+
+class LedgerEntryAttachment(db.Model):
+    __tablename__ = "ledger_entry_attachments"
+
+    id = db.Column(db.Integer, primary_key=True)
+    entry_id = db.Column(db.Integer, db.ForeignKey("ledger_entries.id"), nullable=False, index=True)
+    filename = db.Column(db.String(255), nullable=False)
+    original_filename = db.Column(db.String(255), nullable=False)
+    file_type = db.Column(db.String(20), nullable=False, index=True)
+    file_size_bytes = db.Column(db.Integer, nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "entry_id": self.entry_id,
+            "filename": self.filename,
+            "original_filename": self.original_filename,
+            "file_type": self.file_type,
+            "file_size_bytes": self.file_size_bytes,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
 
 
 class TermDeposit(db.Model):
@@ -273,4 +302,36 @@ class BankStatement(db.Model):
             "uploaded_by_email": self.uploaded_by_email,
             "uploaded_at": self.uploaded_at.isoformat(),
             "description": self.description,
+        }
+
+
+class TreasuryDocument(db.Model):
+    """Biblioteca de documentos de Tesorería."""
+
+    __tablename__ = "treasury_documents"
+
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(255), nullable=False)
+    description = db.Column(db.String(1000), nullable=True)
+    filename = db.Column(db.String(255), nullable=False)
+    original_filename = db.Column(db.String(255), nullable=False)
+    file_type = db.Column(db.String(20), nullable=False, index=True)
+    file_size_bytes = db.Column(db.Integer, nullable=False)
+    uploaded_by_email = db.Column(db.String(255), nullable=False, index=True)
+    uploaded_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    def __repr__(self) -> str:
+        return f"<TreasuryDocument {self.id} {self.original_filename}>"
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "description": self.description,
+            "filename": self.filename,
+            "original_filename": self.original_filename,
+            "file_type": self.file_type,
+            "file_size_bytes": self.file_size_bytes,
+            "uploaded_by_email": self.uploaded_by_email,
+            "uploaded_at": self.uploaded_at.isoformat(),
         }

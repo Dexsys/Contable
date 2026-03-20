@@ -210,6 +210,8 @@ Ejemplo por rango:
 Script principal:
 
 - python deploy_to_server.py
+- python deploy_to_server.py --sync-from-server-only
+- python sync_runtime_from_server.py
 
 El script realiza:
 
@@ -222,7 +224,25 @@ El script realiza:
 - Instalación del unit file en /etc/systemd/system/contable.service
 - daemon-reload, enable, restart y validación de servicio
 - Instalación/validación de sitio Nginx en sites-available/sites-enabled
-- En primer despliegue, sincroniza base local (`instance/*.db`) y archivos de `uploads/`.
+- Al finalizar deploy, sincroniza datos desde servidor hacia desarrollo local:
+   - Reemplaza base(s) local(es) en `instance/` con las del servidor.
+   - Descarga archivos faltantes de `uploads/` sin sobreescribir los ya existentes localmente.
+
+Importante (modo seguro por defecto):
+
+- Durante `python deploy_to_server.py`, NO se copia runtime local (`instance/`, `uploads/`) hacia producción.
+- Si necesitas forzar ese comportamiento de forma excepcional, usar `DEPLOY_PUSH_RUNTIME_TO_SERVER=1`.
+- `DEPLOY_FIRST_SYNC_DATA` quedó deprecada y ya no debe usarse para subir datos a producción.
+
+Sincronizacion manual (sin deploy):
+
+- `python deploy_to_server.py --sync-from-server-only`
+- o `python sync_runtime_from_server.py`
+
+Reglas de sincronizacion manual:
+
+- Base de datos local en `instance/`: se reemplaza por la del servidor.
+- `uploads/` local: solo se descargan archivos faltantes; los existentes no se sobreescriben.
 
 Objetivo actual de despliegue inicial:
 
@@ -233,7 +253,8 @@ Variables recomendadas en `.env` para este caso:
 
 - `DEPLOY_SSH_HOST=192.168.0.89`
 - `DEPLOY_REMOTE_PROJECT_PATH=~/Developer/Flask/Contable`
-- `DEPLOY_FIRST_SYNC_DATA=1`
+- `DEPLOY_PUSH_RUNTIME_TO_SERVER=0` (recomendado para no sobrescribir producción)
+- `DEPLOY_PULL_RUNTIME_AFTER_DEPLOY=1` (activa sync servidor -> local post-deploy)
 
 ## Respaldo a GitHub
 
