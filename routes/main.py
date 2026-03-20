@@ -3,18 +3,22 @@ import json
 import os
 import uuid
 from decimal import Decimal, InvalidOperation
+from io import BytesIO
 
-from flask import Blueprint, current_app, jsonify, render_template, request, send_from_directory, url_for
+from flask import Blueprint, current_app, jsonify, render_template, request, send_file, send_from_directory, url_for
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from sqlalchemy import func
 from werkzeug.utils import secure_filename
 
 from extensions import db
-from models import Account, AuditLog, LedgerEntry, TermDeposit, Voucher, VoucherLine
+from models import Account, AuditLog, BankStatement, LedgerEntry, TermDeposit, Voucher, VoucherLine
 from routes.security import get_current_user, require_permission
 
 main_bp = Blueprint("main", __name__)
 
 ALLOWED_RECEIPT_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "gif"}
+ALLOWED_STATEMENT_EXTENSIONS = {"pdf", "xlsx"}
 MAIN_APPROVERS = ["kazat@colbun.cl", "lcorales@colbun.cl"]
 
 
@@ -85,6 +89,13 @@ def allowed_receipt(filename: str) -> bool:
     return ext in ALLOWED_RECEIPT_EXTENSIONS
 
 
+def allowed_statement(filename: str) -> bool:
+    if not filename or "." not in filename:
+        return False
+    ext = filename.rsplit(".", 1)[1].lower()
+    return ext in ALLOWED_STATEMENT_EXTENSIONS
+
+
 def save_receipt_file(file_storage):
     if not file_storage or not file_storage.filename:
         return None
@@ -101,6 +112,26 @@ def save_receipt_file(file_storage):
     full_path = os.path.join(folder, unique_name)
     file_storage.save(full_path)
     return unique_name
+
+
+def save_statement_file(file_storage):
+    if not file_storage or not file_storage.filename:
+        return None, None
+
+    original_filename = file_storage.filename
+    filename = secure_filename(original_filename)
+    if not allowed_statement(filename):
+        raise ValueError("Formato no permitido. Usa PDF o XLSX")
+
+    ext = filename.rsplit(".", 1)[1].lower()
+    unique_name = f"stmt_{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.{ext}"
+
+    folder = current_app.config["UPLOAD_FOLDER"]
+    os.makedirs(folder, exist_ok=True)
+    full_path = os.path.join(folder, unique_name)
+    file_storage.save(full_path)
+    return unique_name, ext
+
 
 
 def normalize_email(value):
@@ -326,6 +357,63 @@ def apply_period_filters(query):
     return query
 
 
+def get_entry_account_code_and_name(entry):
+    code = entry.account.code if entry.account else entry.raw_account_code
+    name = entry.account.name if entry.account else entry.raw_account_name
+    code = (code or "sin_cuenta").strip()
+    name = (name or "Sin cuenta asignada").strip()
+    return code, name
+
+
+def get_level3_code_and_name(code: str, name: str, names_map: dict[str, str]):
+    if code == "sin_cuenta":
+        return code, name or "Sin cuenta asignada"
+
+    parts = [part for part in code.split(".") if part]
+    if not parts:
+        return "sin_cuenta", name or "Sin cuenta asignada"
+
+    level3_code = ".".join(parts[:3])
+    resolved_name = names_map.get(level3_code) if level3_code else None
+    return level3_code, (resolved_name or name or level3_code or "Sin cuenta asignada")
+
+
+def aggregate_level3(entries):
+    names = account_names_map()
+    grouped = {}
+
+    for entry in entries:
+        code, name = get_entry_account_code_and_name(entry)
+        level3_code, level3_name = get_level3_code_and_name(code, name, names)
+        key = level3_code or "sin_cuenta"
+
+        if key not in grouped:
+            grouped[key] = {
+                "code": key,
+                "name": level3_name,
+                "debit": Decimal("0"),
+                "credit": Decimal("0"),
+            }
+
+        grouped[key]["debit"] += Decimal(entry.debit or 0)
+        grouped[key]["credit"] += Decimal(entry.credit or 0)
+
+    rows = []
+    for item in grouped.values():
+        rows.append(
+            {
+                "code": item["code"],
+                "name": item["name"],
+                "debit": float(item["debit"]),
+                "credit": float(item["credit"]),
+                "balance": float(item["credit"] - item["debit"]),
+            }
+        )
+
+    rows.sort(key=lambda x: x["code"])
+    return rows
+
+
 def build_pending_voucher_summary_items():
     start, end, month, year = get_period_filters()
 
@@ -480,6 +568,7 @@ def create_entry():
         entry = build_ledger_entry(payload, receipt_image_path=receipt_image_path)
         db.session.add(entry)
         db.session.flush()
+        db.session.commit()
         write_audit_log("entry_created", "ledger_entry", entry.id, entry.description[:200])
         db.session.commit()
         return jsonify(
@@ -496,6 +585,9 @@ def create_entry():
     except ValueError as exc:
         db.session.rollback()
         return jsonify({"status": "error", "message": str(exc)}), 400
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({"status": "error", "message": f"Error interno: {str(exc)}"}), 500
 
 
 @main_bp.patch("/api/entries/<int:entry_id>")
@@ -542,12 +634,16 @@ def update_entry(entry_id):
         entry.raw_account_name = account_name
         entry.note = (payload.get("note") or entry.note or "").strip() or None
 
+        db.session.commit()
         write_audit_log("entry_updated", "ledger_entry", entry.id, entry.description[:200])
         db.session.commit()
         return jsonify({"status": "ok", "entry_id": entry.id}), 200
     except ValueError as exc:
         db.session.rollback()
         return jsonify({"status": "error", "message": str(exc)}), 400
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({"status": "error", "message": f"Error interno: {str(exc)}"}), 500
 
 
 @main_bp.delete("/api/entries/<int:entry_id>")
@@ -603,6 +699,7 @@ def open_term_deposit():
         }
         entry = build_ledger_entry(entry_payload, movement_type="term_deposit_open", term_deposit_id=deposit.id)
         db.session.add(entry)
+        db.session.commit()
         write_audit_log("term_deposit_opened", "term_deposit", deposit.id, f"Codigo: {deposit.code}")
         db.session.commit()
 
@@ -610,6 +707,9 @@ def open_term_deposit():
     except ValueError as exc:
         db.session.rollback()
         return jsonify({"status": "error", "message": str(exc)}), 400
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({"status": "error", "message": f"Error interno: {str(exc)}"}), 500
 
 
 @main_bp.post("/api/term-deposits/<string:code>/rescue")
@@ -643,6 +743,7 @@ def rescue_term_deposit(code):
         }
         entry = build_ledger_entry(entry_payload, movement_type="term_deposit_rescue", term_deposit_id=deposit.id)
         db.session.add(entry)
+        db.session.commit()
         write_audit_log("term_deposit_rescued", "term_deposit", deposit.id, f"Codigo: {deposit.code}")
         db.session.commit()
 
@@ -650,6 +751,9 @@ def rescue_term_deposit(code):
     except ValueError as exc:
         db.session.rollback()
         return jsonify({"status": "error", "message": str(exc)}), 400
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({"status": "error", "message": f"Error interno: {str(exc)}"}), 500
 
 
 @main_bp.get("/api/term-deposits")
@@ -766,6 +870,120 @@ def available_periods_report():
                 "year": latest_date.year if latest_date else None,
                 "month": latest_date.month if latest_date else None,
             },
+        }
+    )
+
+
+@main_bp.get("/api/reports/insights")
+@require_permission("view_reports")
+def report_insights():
+    period_start, period_end = resolve_period_bounds()
+
+    period_query = apply_period_filters(LedgerEntry.query)
+    period_entries = period_query.order_by(LedgerEntry.entry_date.desc(), LedgerEntry.id.desc()).all()
+
+    accumulated_query = LedgerEntry.query
+    if period_end:
+        accumulated_query = accumulated_query.filter(LedgerEntry.entry_date <= period_end)
+    accumulated_entries = accumulated_query.order_by(LedgerEntry.entry_date.asc(), LedgerEntry.id.asc()).all()
+
+    expense_items = []
+    income_items = []
+
+    for entry in period_entries:
+        code, name = get_entry_account_code_and_name(entry)
+        if Decimal(entry.debit or 0) > 0:
+            expense_items.append(
+                {
+                    "id": entry.id,
+                    "entry_date": entry.entry_date.isoformat(),
+                    "description": entry.description,
+                    "account_code": code,
+                    "account_name": name,
+                    "amount": float(entry.debit),
+                }
+            )
+        if Decimal(entry.credit or 0) > 0:
+            income_items.append(
+                {
+                    "id": entry.id,
+                    "entry_date": entry.entry_date.isoformat(),
+                    "description": entry.description,
+                    "account_code": code,
+                    "account_name": name,
+                    "amount": float(entry.credit),
+                }
+            )
+
+    top_expenses = sorted(expense_items, key=lambda x: x["amount"], reverse=True)[:5]
+    top_incomes = sorted(income_items, key=lambda x: x["amount"], reverse=True)[:5]
+
+    investments_by_type_raw = {}
+    for entry in accumulated_entries:
+        movement_type = (entry.movement_type or "general").strip() or "general"
+        if movement_type not in ("term_deposit_open", "term_deposit_rescue"):
+            continue
+
+        label = "Aperturas DP" if movement_type == "term_deposit_open" else "Rescates DP"
+        value = Decimal(entry.debit or 0) if movement_type == "term_deposit_open" else Decimal(entry.credit or 0)
+        if value <= 0:
+            continue
+        investments_by_type_raw[label] = investments_by_type_raw.get(label, Decimal("0")) + value
+
+    total_open = investments_by_type_raw.get("Aperturas DP", Decimal("0"))
+    total_rescue = investments_by_type_raw.get("Rescates DP", Decimal("0"))
+    net_invested = total_open - total_rescue
+
+    investments_by_type = [
+        {
+            "type": label,
+            "amount": float(amount),
+        }
+        for label, amount in sorted(investments_by_type_raw.items(), key=lambda x: x[0])
+    ]
+    investments_by_type.append({"type": "Neto invertido", "amount": float(net_invested)})
+
+    level3_period = aggregate_level3(period_entries)
+    level3_accumulated = aggregate_level3(accumulated_entries)
+    period_map = {row["code"]: row for row in level3_period}
+    accumulated_map = {row["code"]: row for row in level3_accumulated}
+
+    merged_level3 = []
+    all_codes = sorted(set(period_map.keys()) | set(accumulated_map.keys()))
+    for code in all_codes:
+        period_row = period_map.get(code)
+        acc_row = accumulated_map.get(code)
+        merged_level3.append(
+            {
+                "code": code,
+                "name": (period_row or acc_row or {}).get("name", code),
+                "period": {
+                    "debit": (period_row or {}).get("debit", 0.0),
+                    "credit": (period_row or {}).get("credit", 0.0),
+                    "balance": (period_row or {}).get("balance", 0.0),
+                },
+                "accumulated": {
+                    "debit": (acc_row or {}).get("debit", 0.0),
+                    "credit": (acc_row or {}).get("credit", 0.0),
+                    "balance": (acc_row or {}).get("balance", 0.0),
+                },
+            }
+        )
+
+    return jsonify(
+        {
+            "filters": {
+                "year": request.args.get("year"),
+                "month": request.args.get("month"),
+                "start_date": request.args.get("start_date"),
+                "end_date": request.args.get("end_date"),
+                "period_start": period_start.isoformat() if period_start else None,
+                "period_end": period_end.isoformat() if period_end else None,
+            },
+            "top_expenses": top_expenses,
+            "top_incomes": top_incomes,
+            "investments_by_type": investments_by_type,
+            "level3_summary": merged_level3,
         }
     )
 
@@ -894,6 +1112,7 @@ def create_voucher():
                 )
             )
 
+        db.session.commit()
         write_audit_log("voucher_created", "voucher", voucher.id, f"Nro: {voucher.voucher_number} | Presentador: {voucher.presenter_email}")
         db.session.commit()
         return (
@@ -911,6 +1130,9 @@ def create_voucher():
     except ValueError as exc:
         db.session.rollback()
         return jsonify({"status": "error", "message": str(exc)}), 400
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({"status": "error", "message": f"Error interno: {str(exc)}"}), 500
 
 
 @main_bp.get("/api/vouchers")
@@ -982,6 +1204,7 @@ def approve_voucher(voucher_id):
         voucher.approved_at = dt.datetime.utcnow()
 
         apply_voucher_to_ledger(voucher)
+        db.session.commit()
         write_audit_log("voucher_approved", "voucher", voucher.id, f"Nro: {voucher.voucher_number} | Aprobador: {approver_email}")
         db.session.commit()
 
@@ -989,6 +1212,9 @@ def approve_voucher(voucher_id):
     except ValueError as exc:
         db.session.rollback()
         return jsonify({"status": "error", "message": str(exc)}), 400
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({"status": "error", "message": f"Error interno: {str(exc)}"}), 500
 
 
 @main_bp.post("/api/vouchers/<int:voucher_id>/reject")
@@ -1018,6 +1244,7 @@ def reject_voucher(voucher_id):
         voucher.rejected_at = dt.datetime.utcnow()
         voucher.rejection_reason = rejection_reason
 
+        db.session.commit()
         write_audit_log(
             "voucher_rejected",
             "voucher",
@@ -1030,3 +1257,256 @@ def reject_voucher(voucher_id):
     except ValueError as exc:
         db.session.rollback()
         return jsonify({"status": "error", "message": str(exc)}), 400
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({"status": "error", "message": f"Error interno: {str(exc)}"}), 500
+
+
+@main_bp.post("/api/bank-statements")
+@require_permission("manage_term_deposits")
+def upload_bank_statement():
+    try:
+        year = request.form.get("year", type=int)
+        month = request.form.get("month", type=int)
+        description = (request.form.get("description") or "").strip()
+
+        if not year or not month or month < 1 or month > 12:
+            return jsonify({"status": "error", "message": "año y mes (1-12) son requeridos"}), 400
+
+        current_user = get_current_user(required=True, auto_create=False)
+        if not current_user:
+            return jsonify({"status": "error", "message": "No autenticado"}), 401
+
+        file = request.files.get("file")
+        if not file or not file.filename:
+            return jsonify({"status": "error", "message": "Archivo requerido"}), 400
+
+        filename, ext = save_statement_file(file)
+
+        existing = BankStatement.query.filter_by(year=year, month=month).one_or_none()
+        if existing:
+            db.session.delete(existing)
+
+        statement = BankStatement(
+            year=year,
+            month=month,
+            filename=filename,
+            original_filename=file.filename,
+            file_type=ext,
+            file_size_bytes=len(file.read()),
+            uploaded_by_email=current_user.email,
+            description=description,
+        )
+        file.seek(0)
+        statement.file_size_bytes = len(file.read())
+        db.session.add(statement)
+        write_audit_log("bank_statement_uploaded", "bank_statement", None, f"{year}-{month:02d}")
+        db.session.commit()
+
+        return jsonify(
+            {
+                "status": "ok",
+                "message": "Cartola subida",
+                "statement": statement.to_dict(),
+            }
+        ), 201
+    except ValueError as exc:
+        db.session.rollback()
+        return jsonify({"status": "error", "message": str(exc)}), 400
+
+
+@main_bp.get("/api/bank-statements")
+@require_permission("view_reports")
+def list_bank_statements():
+    statements = BankStatement.query.order_by(BankStatement.uploaded_at.desc()).all()
+    return jsonify({"items": [s.to_dict() for s in statements]})
+
+
+@main_bp.delete("/api/bank-statements/<int:statement_id>")
+@require_permission("manage_term_deposits")
+def delete_bank_statement(statement_id):
+    statement = BankStatement.query.filter_by(id=statement_id).one_or_none()
+    if not statement:
+        return jsonify({"status": "error", "message": "Cartola no encontrada"}), 404
+
+    filename = statement.filename
+    folder = current_app.config["UPLOAD_FOLDER"]
+    filepath = os.path.join(folder, filename)
+    if os.path.exists(filepath):
+        os.remove(filepath)
+
+    write_audit_log("bank_statement_deleted", "bank_statement", statement_id, f"{statement.year}-{statement.month:02d}")
+    db.session.delete(statement)
+    db.session.commit()
+
+    return jsonify({"status": "ok", "message": "Cartola eliminada"}), 200
+
+
+@main_bp.get("/api/bank-statements/<int:statement_id>/download")
+@require_permission("view_reports")
+def download_bank_statement(statement_id):
+    statement = BankStatement.query.filter_by(id=statement_id).one_or_none()
+    if not statement:
+        return jsonify({"status": "error", "message": "Cartola no encontrada"}), 404
+
+    folder = current_app.config["UPLOAD_FOLDER"]
+    safe_name = secure_filename(statement.filename)
+    try:
+        return send_from_directory(folder, safe_name, as_attachment=True, download_name=statement.original_filename)
+    except FileNotFoundError:
+        return jsonify({"status": "error", "message": "Archivo no encontrado en servidor"}), 404
+
+
+@main_bp.get("/api/reports/export")
+@require_permission("view_reports")
+def export_report():
+    format_type = request.args.get("format", "xlsx").lower()
+    if format_type not in ("xlsx",):
+        return jsonify({"status": "error", "message": "Formato no soportado. Usa xlsx"}), 400
+
+    period_start, period_end = resolve_period_bounds()
+
+    period_query = apply_period_filters(LedgerEntry.query)
+    period_entries = period_query.order_by(LedgerEntry.entry_date.asc(), LedgerEntry.id.asc()).all()
+
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    ws_top_expenses = wb.create_sheet("Top 5 Egresos")
+    ws_top_incomes = wb.create_sheet("Top 5 Ingresos")
+    ws_investments = wb.create_sheet("Inversiones")
+    ws_level3 = wb.create_sheet("Resumen Nivel 3")
+
+    header_fill = PatternFill(start_color="1F7A8C", end_color="1F7A8C", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    thin_border = Border(
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
+    )
+    money_format = '#,##0.00'
+
+    expense_items = []
+    income_items = []
+    for entry in period_entries:
+        code, name = get_entry_account_code_and_name(entry)
+        if Decimal(entry.debit or 0) > 0:
+            expense_items.append(
+                {
+                    "description": entry.description,
+                    "account": f"{code} - {name}",
+                    "amount": float(entry.debit),
+                    "date": entry.entry_date.isoformat(),
+                }
+            )
+        if Decimal(entry.credit or 0) > 0:
+            income_items.append(
+                {
+                    "description": entry.description,
+                    "account": f"{code} - {name}",
+                    "amount": float(entry.credit),
+                    "date": entry.entry_date.isoformat(),
+                }
+            )
+
+    top_expenses = sorted(expense_items, key=lambda x: x["amount"], reverse=True)[:5]
+    top_incomes = sorted(income_items, key=lambda x: x["amount"], reverse=True)[:5]
+
+    ws_top_expenses.append(["Fecha", "Descripción", "Cuenta", "Monto"])
+    for item in top_expenses:
+        ws_top_expenses.append([item["date"], item["description"], item["account"], item["amount"]])
+
+    ws_top_incomes.append(["Fecha", "Descripción", "Cuenta", "Monto"])
+    for item in top_incomes:
+        ws_top_incomes.append([item["date"], item["description"], item["account"], item["amount"]])
+
+    accumulated_query = LedgerEntry.query
+    if period_end:
+        accumulated_query = accumulated_query.filter(LedgerEntry.entry_date <= period_end)
+    accumulated_entries = accumulated_query.all()
+
+    investments_by_type_raw = {}
+    for entry in accumulated_entries:
+        movement_type = (entry.movement_type or "general").strip() or "general"
+        if movement_type not in ("term_deposit_open", "term_deposit_rescue"):
+            continue
+        label = "Aperturas DP" if movement_type == "term_deposit_open" else "Rescates DP"
+        value = Decimal(entry.debit or 0) if movement_type == "term_deposit_open" else Decimal(entry.credit or 0)
+        if value <= 0:
+            continue
+        investments_by_type_raw[label] = investments_by_type_raw.get(label, Decimal("0")) + value
+
+    total_open = investments_by_type_raw.get("Aperturas DP", Decimal("0"))
+    total_rescue = investments_by_type_raw.get("Rescates DP", Decimal("0"))
+    net_invested = total_open - total_rescue
+
+    ws_investments.append(["Tipo", "Monto"])
+    for label, amount in sorted(investments_by_type_raw.items()):
+        ws_investments.append([label, float(amount)])
+    ws_investments.append(["Neto invertido", float(net_invested)])
+
+    level3_period = aggregate_level3(period_entries)
+    level3_accumulated = aggregate_level3(accumulated_entries)
+    period_map = {row["code"]: row for row in level3_period}
+    accumulated_map = {row["code"]: row for row in level3_accumulated}
+
+    ws_level3.append(
+        [
+            "Código",
+            "Cuenta",
+            "Ingreso Período",
+            "Egreso Período",
+            "Saldo Período",
+            "Ingreso Acumulado",
+            "Egreso Acumulado",
+            "Saldo Acumulado",
+        ]
+    )
+
+    all_codes = sorted(set(period_map.keys()) | set(accumulated_map.keys()))
+    for code in all_codes:
+        period_row = period_map.get(code)
+        acc_row = accumulated_map.get(code)
+        ws_level3.append(
+            [
+                code,
+                (period_row or acc_row or {}).get("name", code),
+                (period_row or {}).get("credit", 0.0),
+                (period_row or {}).get("debit", 0.0),
+                (period_row or {}).get("balance", 0.0),
+                (acc_row or {}).get("credit", 0.0),
+                (acc_row or {}).get("debit", 0.0),
+                (acc_row or {}).get("balance", 0.0),
+            ]
+        )
+
+    for ws in wb.sheetnames:
+        sheet = wb[ws]
+        for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row):
+            for cell in row:
+                cell.border = thin_border
+                if cell.row == 1:
+                    cell.fill = header_fill
+                    cell.font = header_font
+                if isinstance(cell.value, float):
+                    cell.number_format = money_format
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    for ws_name in wb.sheetnames:
+        sheet = wb[ws_name]
+        sheet.column_dimensions["A"].width = 18
+        sheet.column_dimensions["B"].width = 25
+        sheet.column_dimensions["C"].width = 20
+        sheet.column_dimensions["D"].width = 18
+        for col in ["E", "F", "G", "H"]:
+            sheet.column_dimensions[col].width = 18
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    period_label = f"{period_start.strftime('%Y-%m-%d') if period_start else 'inicio'}_a_{period_end.strftime('%Y-%m-%d') if period_end else 'hoy'}"
+    filename = f"reportes_{period_label}.xlsx"
+
+    return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name=filename)

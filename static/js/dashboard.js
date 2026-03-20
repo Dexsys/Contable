@@ -666,8 +666,148 @@ function buildFilterQuery() {
     return params.toString();
 }
 
+function buildReportQuery() {
+    const params = new URLSearchParams();
+    const year = qs("year").value;
+    const month = qs("month").value;
+
+    if (year) params.set("year", year);
+    if (month) params.set("month", month);
+    return params.toString();
+}
+
+function renderBarReport(targetId, items, emptyMessage, tone = "neutral") {
+    const container = qs(targetId);
+    if (!container) return;
+
+    if (!items || items.length === 0) {
+        container.innerHTML = `<p class="report-empty">${emptyMessage}</p>`;
+        return;
+    }
+
+    const max = Math.max(...items.map((item) => Number(item.amount || 0)), 1);
+    container.innerHTML = "";
+
+    items.forEach((item, idx) => {
+        const amount = Number(item.amount || 0);
+        const width = Math.max(6, (amount / max) * 100);
+        const row = document.createElement("div");
+        row.className = `bar-row tone-${tone}`;
+        row.innerHTML = `
+            <div class="bar-meta">
+                <span class="bar-rank">#${idx + 1}</span>
+                <span class="bar-title">${item.description || item.type || "Sin detalle"}</span>
+                <span class="bar-amount">${formatCurrency(amount)}</span>
+            </div>
+            <div class="bar-track">
+                <div class="bar-fill" style="width: ${width}%"></div>
+            </div>
+            <div class="bar-subtitle">${item.entry_date || item.account_code || ""}</div>
+        `;
+        container.appendChild(row);
+    });
+}
+
+function renderLevel3SummaryRows(items) {
+    const tbody = qs("report-level3-body");
+    if (!tbody) return;
+
+    tbody.innerHTML = "";
+    if (!items || items.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8">No hay datos para el período seleccionado.</td></tr>';
+        return;
+    }
+
+    items.forEach((item) => {
+        const row = document.createElement("tr");
+        row.innerHTML = `
+            <td>${item.code || "-"}</td>
+            <td>${item.name || "-"}</td>
+            <td class="num">${formatCurrency(item.period?.credit || 0)}</td>
+            <td class="num">${formatCurrency(item.period?.debit || 0)}</td>
+            <td class="num ${signedClass(item.period?.balance || 0)}">${formatCurrency(item.period?.balance || 0)}</td>
+            <td class="num">${formatCurrency(item.accumulated?.credit || 0)}</td>
+            <td class="num">${formatCurrency(item.accumulated?.debit || 0)}</td>
+            <td class="num ${signedClass(item.accumulated?.balance || 0)}">${formatCurrency(item.accumulated?.balance || 0)}</td>
+        `;
+        tbody.appendChild(row);
+    });
+}
+
+function formatReportPeriod(filters = {}) {
+    const from = filters.period_start || "inicio";
+    const to = filters.period_end || "hoy";
+    if (!filters.period_start && !filters.period_end) {
+        return "Período: todo el histórico";
+    }
+    return `Período: ${from} a ${to}`;
+}
+
+async function openReportsModal() {
+    const modal = qs("reports-modal");
+    if (!modal) return;
+
+    try {
+        const query = buildReportQuery();
+        const payload = await fetchJson(`/api/reports/insights?${query}`);
+
+        qs("reports-period-label").textContent = formatReportPeriod(payload.filters || {});
+        renderBarReport("report-top-expenses", payload.top_expenses, "Sin egresos en el período.", "expense");
+        renderBarReport("report-top-incomes", payload.top_incomes, "Sin ingresos en el período.", "income");
+        renderBarReport("report-investments", payload.investments_by_type, "Sin inversiones acumuladas.", "investment");
+        renderLevel3SummaryRows(payload.level3_summary || []);
+
+        modal.hidden = false;
+    } catch (error) {
+        toast(error.message, true);
+    }
+}
+
+function closeReportsModal() {
+    const modal = qs("reports-modal");
+    if (!modal) return;
+    modal.hidden = true;
+}
+
+function setupReportsModal() {
+    const modal = qs("reports-modal");
+    const openBtn = qs("open-reports-btn");
+    const closeBtn = qs("reports-close");
+    const exportBtn = qs("export-reports-xlsx");
+
+    if (!modal || !openBtn || !closeBtn) {
+        return;
+    }
+
+    openBtn.addEventListener("click", async () => {
+        await openReportsModal();
+    });
+
+    closeBtn.addEventListener("click", closeReportsModal);
+
+    modal.addEventListener("click", (event) => {
+        if (event.target === modal) {
+            closeReportsModal();
+        }
+    });
+
+    if (exportBtn) {
+        exportBtn.addEventListener("click", async () => {
+            try {
+                const query = buildReportQuery();
+                const link = document.createElement("a");
+                link.href = `/api/reports/export?${query}&format=xlsx`;
+                link.click();
+                toast("Descargando reportes...");
+            } catch (error) {
+                toast(error.message, true);
+            }
+        });
+    }
+}
+
 function setupMenu() {
-    const buttons = Array.from(document.querySelectorAll(".menu-btn")).filter((btn) => !btn.hidden);
+    const buttons = Array.from(document.querySelectorAll(".menu-btn")).filter((btn) => !btn.hidden && btn.dataset.panel);
     const panels = Array.from(document.querySelectorAll(".panel"));
 
     function activate(panelId) {
@@ -915,6 +1055,16 @@ async function loadUsers() {
     }
 
     const payload = await fetchJson("/admin/users");
+    const createRoleSelect = qs("new-user-role");
+    if (createRoleSelect) {
+        createRoleSelect.innerHTML = state.roles
+            .map((role) => `<option value="${role}">${role}</option>`)
+            .join("");
+        if (!createRoleSelect.value && state.roles.includes("visita")) {
+            createRoleSelect.value = "visita";
+        }
+    }
+
     const tbody = qs("users-body");
     if (!tbody) {
         return;
@@ -933,8 +1083,11 @@ async function loadUsers() {
             <td>${item.role}</td>
             <td>${item.effective_role}</td>
             <td>
-                <select class="role-select" data-id="${item.id}">${options}</select>
-                <button type="button" class="save-role-btn" data-id="${item.id}">Guardar</button>
+                <div class="row-actions">
+                    <select class="role-select" data-id="${item.id}">${options}</select>
+                    <button type="button" class="save-role-btn" data-id="${item.id}">Guardar</button>
+                    <button type="button" class="delete-user-btn" data-id="${item.id}">Eliminar</button>
+                </div>
             </td>
         `;
         tbody.appendChild(row);
@@ -963,6 +1116,137 @@ async function loadUsers() {
             }
         });
     });
+
+    tbody.querySelectorAll(".delete-user-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+            const row = btn.closest("tr");
+            const email = row?.children?.[0]?.textContent?.trim() || "";
+            const accepted = window.confirm(`¿Seguro que deseas eliminar a ${email || "este usuario"}?`);
+            if (!accepted) {
+                return;
+            }
+
+            try {
+                const deleted = await fetchJson(`/admin/users/${btn.dataset.id}`, {
+                    method: "DELETE",
+                });
+                await loadUsers();
+                await loadAuditLog();
+                toast(deleted.message || "Usuario eliminado");
+            } catch (error) {
+                toast(error.message, true);
+            }
+        });
+    });
+}
+
+async function loadBankStatements() {
+    if (!hasPermission("view_reports")) {
+        return;
+    }
+
+    try {
+        const payload = await fetchJson("/api/bank-statements");
+        const tbody = qs("statements-body");
+        if (!tbody) {
+            return;
+        }
+        tbody.innerHTML = "";
+
+        const canManage = hasPermission("manage_term_deposits");
+
+        payload.items.forEach((item) => {
+            const row = document.createElement("tr");
+            const uploadedAt = item.uploaded_at ? item.uploaded_at.replace("T", " ").slice(0, 16) : "-";
+            const actions = canManage
+                ? `
+                    <div class="row-actions">
+                        <a href="/api/bank-statements/${item.id}/download" class="download-btn">Descargar</a>
+                        <button type="button" class="delete-statement-btn" data-id="${item.id}">Eliminar</button>
+                    </div>
+                `
+                : `<a href="/api/bank-statements/${item.id}/download" class="download-btn">Descargar</a>`;
+
+            row.innerHTML = `
+                <td>${item.year}-${String(item.month).padStart(2, "0")}</td>
+                <td>${item.original_filename}</td>
+                <td><code>${item.file_type.toUpperCase()}</code></td>
+                <td>${item.uploaded_by_email}</td>
+                <td>${uploadedAt}</td>
+                <td>${item.description || "-"}</td>
+                <td>${actions}</td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        if (canManage) {
+            tbody.querySelectorAll(".delete-statement-btn").forEach((btn) => {
+                btn.addEventListener("click", async () => {
+                    const row = btn.closest("tr");
+                    const period = row?.children?.[0]?.textContent?.trim() || "";
+                    const accepted = window.confirm(`¿Seguro que deseas eliminar la cartola de ${period}?`);
+                    if (!accepted) {
+                        return;
+                    }
+
+                    try {
+                        await fetchJson(`/api/bank-statements/${btn.dataset.id}`, {
+                            method: "DELETE",
+                        });
+                        await loadBankStatements();
+                        toast("Cartola eliminada");
+                    } catch (error) {
+                        toast(error.message, true);
+                    }
+                });
+            });
+        }
+    } catch (error) {
+        toast(error.message, true);
+    }
+}
+
+function setupBankStatementsForm() {
+    const form = qs("upload-statement-form");
+    const actionsDiv = qs("upload-stmt-actions");
+    const yearInput = qs("stmt-year");
+
+    if (!form || !actionsDiv || !yearInput) {
+        return;
+    }
+
+    if (!hasPermission("manage_term_deposits")) {
+        form.parentElement.innerHTML = '<p class="subtitle">Solo Tesoreros y Administradores pueden subir cartolas.</p>';
+        return;
+    }
+
+    actionsDiv.style.display = "flex";
+
+    const today = new Date();
+    yearInput.value = today.getFullYear();
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+
+        const payload = new FormData();
+        payload.set("year", qs("stmt-year").value);
+        payload.set("month", qs("stmt-month").value);
+        payload.set("description", qs("stmt-description").value);
+        payload.set("file", qs("stmt-file").files[0]);
+
+        try {
+            const result = await fetchJson("/api/bank-statements", {
+                method: "POST",
+                body: payload,
+            });
+            form.reset();
+            yearInput.value = today.getFullYear();
+            await loadBankStatements();
+            toast(result.message || "Cartola subida");
+        } catch (error) {
+            toast(error.message, true);
+        }
+    });
 }
 
 async function refreshAllVisibleData() {
@@ -972,6 +1256,7 @@ async function refreshAllVisibleData() {
         loadPendingVouchers(),
         loadUsers(),
         loadAuditLog(),
+        loadBankStatements(),
     ]);
 }
 
@@ -1067,6 +1352,35 @@ function setupForms() {
         });
     }
 
+    const createUserForm = qs("create-user-form");
+    if (createUserForm) {
+        createUserForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const payload = {
+                email: qs("new-user-email").value.trim(),
+                name: qs("new-user-name").value.trim(),
+                role: qs("new-user-role").value,
+                password: qs("new-user-password").value,
+            };
+
+            try {
+                const created = await fetchJson("/admin/users", {
+                    method: "POST",
+                    body: JSON.stringify(payload),
+                });
+                createUserForm.reset();
+                if (state.roles.includes("visita")) {
+                    qs("new-user-role").value = "visita";
+                }
+                await loadUsers();
+                await loadAuditLog();
+                toast(created.message || "Usuario creado");
+            } catch (error) {
+                toast(error.message, true);
+            }
+        });
+    }
+
     qs("submit-voucher").addEventListener("click", async () => {
         const form = qs("voucher-form");
         const payload = new FormData(form);
@@ -1116,6 +1430,8 @@ async function bootstrap() {
     setupForms();
     setupEditEntryModal();
     setupChangePasswordModal();
+    setupReportsModal();
+    setupBankStatementsForm();
     setupPeriodFilters();
     setupMoneyMasks(document);
     qs("voucher-lines").appendChild(makeVoucherLineRow());

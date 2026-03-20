@@ -240,3 +240,37 @@ class VoucherLine(db.Model):
 
     def __repr__(self) -> str:
         return f"<VoucherLine {self.voucher_id}#{self.line_number}>"
+
+
+class BankStatement(db.Model):
+    """Cartolas bancarias mensuales (PDF/Excel)."""
+
+    __tablename__ = "bank_statements"
+
+    id = db.Column(db.Integer, primary_key=True)
+    year = db.Column(db.Integer, nullable=False, index=True)
+    month = db.Column(db.Integer, nullable=False, index=True)
+    filename = db.Column(db.String(255), nullable=False)
+    original_filename = db.Column(db.String(255), nullable=False)
+    file_type = db.Column(db.String(10), nullable=False)  # 'pdf' o 'xlsx'
+    file_size_bytes = db.Column(db.Integer, nullable=False)
+    uploaded_by_email = db.Column(db.String(255), nullable=False, index=True)
+    uploaded_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)
+    description = db.Column(db.String(500), nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<BankStatement {self.year}-{self.month:02d} ({self.file_type})>"
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "year": self.year,
+            "month": self.month,
+            "filename": self.filename,
+            "original_filename": self.original_filename,
+            "file_type": self.file_type,
+            "file_size_bytes": self.file_size_bytes,
+            "uploaded_by_email": self.uploaded_by_email,
+            "uploaded_at": self.uploaded_at.isoformat(),
+            "description": self.description,
+        }

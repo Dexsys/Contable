@@ -63,6 +63,8 @@
                 <button type="button" class="menu-btn" data-panel="panel-deposits" data-permission="manage_term_deposits">Depositos a Plazo</button>
                 <button type="button" class="menu-btn" data-panel="panel-vouchers" data-permission="create_vouchers">Comprobantes</button>
                 <button type="button" class="menu-btn" data-panel="panel-recent">Ultimos Movimientos</button>
+                <button type="button" class="menu-btn" id="open-reports-btn" data-permission="view_reports">Reportes</button>
+                <button type="button" class="menu-btn" data-panel="panel-statements" data-permission="view_reports">Cartolas Bancarias</button>
                 <button type="button" class="menu-btn" data-panel="panel-users" data-permission="manage_users">Usuarios y Roles</button>
                 <button type="button" class="menu-btn" data-panel="panel-audit" data-permission="manage_users">Log de Auditoría</button>
             </div>
@@ -319,9 +321,78 @@
             </div>
         </section>
 
+        <section class="card span-2 panel" id="panel-statements" hidden>
+            <h2>Cartolas Bancarias</h2>
+            <p class="subtitle">Subir, consultar y descargar cartolas mensuales (PDF/Excel). Solo Tesoreros y Administradores pueden subir/eliminar.</p>
+            <form id="upload-statement-form" class="grid-form" enctype="multipart/form-data">
+                <label>Año
+                    <input type="number" id="stmt-year" min="2020" max="2099" required>
+                </label>
+                <label>Mes
+                    <select id="stmt-month" required>
+                        <option value="">Seleccionar...</option>
+                        <option value="1">Enero</option>
+                        <option value="2">Febrero</option>
+                        <option value="3">Marzo</option>
+                        <option value="4">Abril</option>
+                        <option value="5">Mayo</option>
+                        <option value="6">Junio</option>
+                        <option value="7">Julio</option>
+                        <option value="8">Agosto</option>
+                        <option value="9">Septiembre</option>
+                        <option value="10">Octubre</option>
+                        <option value="11">Noviembre</option>
+                        <option value="12">Diciembre</option>
+                    </select>
+                </label>
+                <label>Archivo (PDF o Excel)
+                    <input type="file" id="stmt-file" accept=".pdf,.xlsx" required>
+                </label>
+                <label class="wide">Descripción (opcional)
+                    <input type="text" id="stmt-description" placeholder="Ejm: Cartola BancoXYZ">
+                </label>
+                <div class="actions wide" id="upload-stmt-actions" style="display: none;">
+                    <button type="submit">Subir Cartola</button>
+                </div>
+            </form>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Período</th>
+                            <th>Archivo</th>
+                            <th>Tipo</th>
+                            <th>Subido por</th>
+                            <th>Fecha</th>
+                            <th>Descripción</th>
+                            <th>Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody id="statements-body"></tbody>
+                </table>
+            </div>
+        </section>
+
         <section class="card span-2 panel" id="panel-users" hidden>
             <h2>Administración de Usuarios</h2>
             <p class="subtitle">Disponible para rol Tesorero o Administrador.</p>
+            <form id="create-user-form" class="grid-form">
+                <label>Email
+                    <input type="email" id="new-user-email" placeholder="usuario@colbun.cl" required>
+                </label>
+                <label>Nombre
+                    <input type="text" id="new-user-name" placeholder="Nombre usuario" required>
+                </label>
+                <label>Rol
+                    <select id="new-user-role" required></select>
+                </label>
+                <label>Contraseña inicial (opcional)
+                    <input type="password" id="new-user-password" minlength="8" placeholder="Mínimo 8 caracteres">
+                </label>
+                <div class="actions wide">
+                    <button type="submit">Agregar usuario</button>
+                </div>
+            </form>
             <div class="table-wrap">
                 <table>
                     <thead>
@@ -338,6 +409,53 @@
             </div>
         </section>
     </main>
+
+    <div id="reports-modal" class="modal-backdrop" hidden>
+        <section class="modal-card reports-modal-card" role="dialog" aria-modal="true" aria-labelledby="reports-title">
+            <div class="modal-head">
+                <h3 id="reports-title">Reportes del Período Seleccionado</h3>
+                <button type="button" id="reports-close" class="modal-close" aria-label="Cerrar">×</button>
+            </div>
+            <p class="subtitle" id="reports-period-label">Período: -</p>
+            <div class="reports-actions">
+                <button type="button" id="export-reports-xlsx" class="secondary-btn">Exportar a XLSX</button>
+            </div>
+            <div class="reports-grid">
+                <article class="report-card">
+                    <h4>Top 5 Mayores Egresos</h4>
+                    <div id="report-top-expenses" class="bar-list"></div>
+                </article>
+                <article class="report-card">
+                    <h4>Top 5 Mayores Ingresos</h4>
+                    <div id="report-top-incomes" class="bar-list"></div>
+                </article>
+                <article class="report-card span-2">
+                    <h4>Inversiones Acumuladas por Tipo</h4>
+                    <div id="report-investments" class="bar-list"></div>
+                </article>
+                <article class="report-card span-2">
+                    <h4>Resumen Cuentas Nivel 3 (Período y Acumulado)</h4>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Código</th>
+                                    <th>Cuenta</th>
+                                    <th class="num">Ingreso Período</th>
+                                    <th class="num">Egreso Período</th>
+                                    <th class="num">Saldo Período</th>
+                                    <th class="num">Ingreso Acumulado</th>
+                                    <th class="num">Egreso Acumulado</th>
+                                    <th class="num">Saldo Acumulado</th>
+                                </tr>
+                            </thead>
+                            <tbody id="report-level3-body"></tbody>
+                        </table>
+                    </div>
+                </article>
+            </div>
+        </section>
+    </div>
 
     <div id="edit-entry-modal" class="modal-backdrop" hidden>
         <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="edit-entry-title">

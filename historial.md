@@ -6,7 +6,7 @@
 
 ---
 
-## [1.2026.0319.2] - 2026-03-19
+## [1.2026.0320] - 2026-03-20
 
 ### Agregado
 - Cambio de contraseña para usuario autenticado (`POST /auth/change-password`).
@@ -42,6 +42,7 @@
 
 ## [1.2026.0319.1] - 2026-03-19
 - Deploy a produccion ejecutado mediante deploy_to_server.py.
+- Respaldo a GitHub ejecutado mediante backup_to_github.py.
 
 ### Agregado
 - Flujo de rechazo de comprobantes con motivo obligatorio.
